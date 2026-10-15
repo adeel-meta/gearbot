@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.exceptions import HTTPException
 
 from app.api.v1.chat import router as chat_router
@@ -60,8 +60,11 @@ async def request_log(request: Request, call_next):
 
 
 @app.get("/")
-async def root():
-    return {
+async def root(request: Request):
+    accept = request.headers.get("accept", "")
+    if settings.app_env != "production" and "text/html" in accept:
+        return RedirectResponse("/chat", status_code=307)
+    payload = {
         "service": "Gear AI Agent API",
         "status": "running",
         "docs": "/docs",
@@ -71,6 +74,9 @@ async def root():
         "chat": "POST /api/v1/agent/chat",
         "handover": "See docs/APP_DEV_HANDOVER.md in the repository",
     }
+    if settings.app_env != "production":
+        payload["playground"] = "/chat"
+    return payload
 
 
 @app.get("/health")

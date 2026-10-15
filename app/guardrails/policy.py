@@ -36,6 +36,55 @@ TRANSMISSION = re.compile(r"\b(?P<name>automatic|manual)\b", re.IGNORECASE)
 FAMILY = re.compile(r"\bfamil(?:y|ies|y-friendly)\b", re.IGNORECASE)
 PER_DAY = re.compile(r"\b(?:per\s*day|daily|/\s*day)\b", re.IGNORECASE)
 TRIP_BUDGET = re.compile(r"\b(?:total|whole\s+trip|trip\s+budget)\b", re.IGNORECASE)
+BUDGET_CHANGE = re.compile(
+    r"\b(?:increase|raise|expand|change|adjust|update)\b.{0,35}"
+    r"\b(?:budget|amount|price\s+limit|spending\s+limit)\b|"
+    r"\b(?:budget|amount|price\s+limit|spending\s+limit)\b.{0,35}"
+    r"\b(?:increase|raise|expand|change|adjust|update|higher)\b|"
+    r"\bhigher\b.{0,25}\b(?:budget|amount|price\s+limit|spending\s+limit)\b",
+    re.IGNORECASE,
+)
+_BUDGET_NUMBER = r"(?P<amount>\d[\d,]*(?:\.\d+)?)(?P<thousands>k)?"
+BUDGET_LABEL_AMOUNT = re.compile(
+    rf"\b(?:budget|amount|price\s+limit|spending\s+limit|spend|maximum|max)\b"
+    rf"(?:\s+(?:is|of|to|at|up\s+to|under|below|less\s+than))?"
+    rf"[:=]?\s*(?:aed\s*)?{_BUDGET_NUMBER}",
+    re.IGNORECASE,
+)
+BUDGET_BOUND_AMOUNT = re.compile(
+    rf"\b(?:under|below|less\s+than|up\s+to|maximum|max)\s+"
+    rf"(?:aed\s*)?{_BUDGET_NUMBER}",
+    re.IGNORECASE,
+)
+CURRENCY_AMOUNT = re.compile(
+    rf"\baed\s*{_BUDGET_NUMBER}\b",
+    re.IGNORECASE,
+)
+BARE_BUDGET_AMOUNT = re.compile(
+    rf"^\s*(?:aed\s*)?{_BUDGET_NUMBER}(?:\s+per\s+day)?\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def budget_change_requested(message: str) -> bool:
+    """Recognize budget refinements that need a value before another search."""
+    return bool(BUDGET_CHANGE.search(message))
+
+
+def budget_amount(message: str, *, allow_bare: bool = False) -> float | None:
+    """Read a clearly stated maximum amount; bare numbers need a pending prompt."""
+    match = (BUDGET_LABEL_AMOUNT.search(message)
+             or BUDGET_BOUND_AMOUNT.search(message)
+             or CURRENCY_AMOUNT.search(message))
+    if match is None and allow_bare:
+        match = BARE_BUDGET_AMOUNT.fullmatch(message)
+    if match is None:
+        return None
+    try:
+        amount = float(match.group("amount").replace(",", ""))
+        return amount * 1000 if match.group("thousands") else amount
+    except ValueError:
+        return None
 
 
 def verified_preference_updates(message: str) -> dict[str, object]:

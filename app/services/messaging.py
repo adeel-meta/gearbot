@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from app.schemas.chat import SearchFilters, VehicleCard
+from app.services.dates import gear_today
+from app.services.dialogue_policy import dates_description, no_results_actions
 
 
 OPENING_SUGGESTIONS = [
@@ -25,16 +29,30 @@ def near_me_prompt() -> str:
     return "Share your location or tell me the area you'd like to search."
 
 
-def location_prompt() -> str:
-    return "Where do you need the car?"
+def location_prompt(filters: SearchFilters | None = None) -> str:
+    dates = dates_description(filters) if filters is not None else None
+    if dates:
+        return f"{dates}, got it. Where should I search? Which city or area?"
+    return "Where should I search? Tell me a city or area."
 
 
-def dates_prompt(pickup_only: bool = False, return_only: bool = False) -> str:
+def dates_prompt(pickup_only: bool = False, return_only: bool = False,
+                 today: date | None = None) -> str:
     if return_only:
         return "What return date should I use?"
     if pickup_only:
         return "What date would you like to start the rental?"
-    return "What pickup and return dates should I use? For example: 10 to 12 October."
+    pickup = (today or gear_today()) + timedelta(days=7)
+    dropoff = pickup + timedelta(days=2)
+    example = (f"{pickup.day} to {dropoff.day} {pickup.strftime('%B')}"
+               if pickup.month == dropoff.month else
+               f"{pickup.day} {pickup.strftime('%B')} to "
+               f"{dropoff.day} {dropoff.strftime('%B')}")
+    return f"What pickup and return dates should I use? For example: {example}."
+
+
+def budget_amount_prompt() -> str:
+    return "What maximum budget should I use? For example, AED 800 per day."
 
 
 def empty_search_prompt() -> str:
@@ -107,6 +125,8 @@ def results_message(
     if refinement_note:
         noun = "car" if count == 1 else "cars"
         message = f"{refinement_note.rstrip('.')}. I found {count} matching {noun}."
+        if filters.from_date and filters.to_date:
+            message = f"{message.rstrip('.')} for {dates_description(filters)}."
         if catalog_skipped:
             message += (
                 " I couldn't narrow these by vehicle type from the app yet, "
@@ -128,6 +148,8 @@ def results_message(
     else:
         tail = " that match what you asked for."
     message = lead + tail
+    if filters.from_date and filters.to_date:
+        message = f"{message.rstrip('.')} for {dates_description(filters)}."
     if catalog_skipped:
         message += (
             " I couldn't narrow these by vehicle type from the app yet, "
@@ -144,14 +166,19 @@ def no_results_message(filters: SearchFilters) -> str:
     )
 
 
-def no_results_suggestions() -> list[str]:
-    return ["Increase budget", "Nearby areas", "Different vehicle type", "Change dates"]
+def no_results_suggestions(filters: SearchFilters | None = None,
+                           *, anywhere: bool = False,
+                           trip_budget: bool = False) -> list[str]:
+    return no_results_actions(filters or SearchFilters(), anywhere=anywhere,
+                              trip_budget=trip_budget)
 
 
 def results_suggestions(filters: SearchFilters, *, has_single_result: bool = False) -> list[str]:
-    chips = ["Cheapest first", "Change dates", "Change budget", "Different vehicle type"]
+    chips = ["Cheapest first", "Change dates",
+             "Change budget" if filters.max_price is not None else "Set budget",
+             "Different vehicle type"]
     if has_single_result:
-        return ["Check availability", "Price details", "Similar cars", "Booking help"]
+        return ["Check availability", "Price details", "Different vehicle type", "Booking help"]
     if filters.sort_by == "price_low":
         chips[0] = "Recommended order"
     return chips
@@ -165,7 +192,7 @@ def unavailable_vehicle_message() -> str:
 
 
 def unavailable_vehicle_suggestions() -> list[str]:
-    return ["Show similar cars", "Change dates"]
+    return ["Different vehicle type", "Change dates"]
 
 
 def vehicle_match_reason(card: VehicleCard, filters: SearchFilters) -> str | None:

@@ -186,9 +186,9 @@ class GearClient:
         self.transport = transport
 
     async def search_cars(self, filters: SearchFilters, token: str | None) -> list[VehicleCard]:
-        params = {"page": "1", "limit": "50", "sort_by": "recommended",
+        params = {"sort_by": "recommended",
                   **filters.query_params()}
-        return vehicle_cards(await self._request("GET", "getCars", token, params=params))
+        return await self._paged_cards("getCars", None, params)
 
     async def search_available_cars(self, filters: SearchFilters,
                                     token: str | None) -> list[VehicleCard]:
@@ -202,10 +202,27 @@ class GearClient:
         forwarded = filters.query_params()
         if filters.max_price is not None and filters.min_price is None:
             forwarded["min_price"] = "0"
-        params = {"page": "1", "limit": "50", **{key: value for key, value in forwarded.items()
+        params = {**{key: value for key, value in forwarded.items()
                                 if key in accepted}}
-        return vehicle_cards(await self._request("GET", "getAvailableCars", token,
-                                                 params=params))
+        return await self._paged_cards("getAvailableCars", token, params)
+
+    async def _paged_cards(self, endpoint: str, token: str | None,
+                           params: dict[str, str]) -> list[VehicleCard]:
+        """Collect complete 50-card pages before applying any local-only filter."""
+        collected: list[VehicleCard] = []
+        seen_ids: set[str] = set()
+        for page in range(1, 11):
+            payload = await self._request("GET", endpoint, token,
+                                          params={"page": str(page), "limit": "50", **params})
+            cards = vehicle_cards(payload)
+            for card in cards:
+                if card.id not in seen_ids:
+                    collected.append(card)
+                    seen_ids.add(card.id)
+            if len(cards) < 50:
+                return collected
+        # An unverified partial inventory must not be described as a complete search.
+        raise GearUnavailable("Gear result pagination exceeded the verification limit")
 
     async def car_details(self, car_id: str, token: str | None) -> VehicleCard:
         if not CAR_ID.fullmatch(car_id):

@@ -11,7 +11,8 @@ from app.clients.llm import OpenAIRequirementExtractor
 from app.config import get_settings
 from app.schemas.chat import ChatRequest, ChatResponse, SessionToken
 from app.security.sessions import SessionStore
-from app.services.conversation import ConversationService
+from app.security.shared_sessions import SessionStoreUnavailable, SharedSessionStore
+from app.services.conversation import ConversationService, TurnConflict
 
 
 router = APIRouter(prefix="/api/v1/agent", tags=["agent"])
@@ -20,18 +21,23 @@ router = APIRouter(prefix="/api/v1/agent", tags=["agent"])
 @lru_cache(maxsize=1)
 def _build_chat_service() -> ConversationService:
     settings = get_settings()
+    sessions = (SharedSessionStore(settings.session_ttl_seconds,
+                                  settings.upstash_redis_rest_url,
+                                  settings.upstash_redis_rest_token)
+                if settings.upstash_redis_rest_url
+                else SessionStore(settings.session_ttl_seconds))
     if settings.demo_mode:
         return ConversationService(
             extractor=(OpenAIRequirementExtractor(settings)
                        if settings.demo_extractor == "hosted" else DemoExtractor()),
             gear=DemoGearClient(),
-            sessions=SessionStore(settings.session_ttl_seconds),
+            sessions=sessions,
             data_source="demo",
         )
     return ConversationService(
         extractor=OpenAIRequirementExtractor(settings),
         gear=GearClient(settings),
-        sessions=SessionStore(settings.session_ttl_seconds),
+        sessions=sessions,
     )
 
 
@@ -83,7 +89,12 @@ async def chat(
     session_id = next(iter(supplied_ids), None)
     request = request.model_copy(update={"session_id": session_id})
     token = bearer_token(authorization)
-    result = await service.chat(request, token)
+    try:
+        result = await service.chat(request, token)
+    except TurnConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SessionStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Conversation is temporarily unavailable") from exc
     cookie_client = session_transport == "cookie" or session_cookie is not None
     if cookie_client:
         settings = get_settings()
@@ -105,7 +116,10 @@ async def reset_chat_session(
 ) -> Response:
     if session_header and session_cookie and session_header != session_cookie:
         raise HTTPException(status_code=400, detail="Conflicting AI session IDs")
-    service.sessions.delete(session_header or session_cookie)
+    try:
+        service.sessions.delete(session_header or session_cookie)
+    except SessionStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Conversation is temporarily unavailable") from exc
     settings = get_settings()
     response.delete_cookie(
         key="ai_session_id", secure=settings.app_env != "development",

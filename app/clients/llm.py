@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from typing import Literal, Protocol
 
 import httpx
@@ -11,11 +12,18 @@ from app.config import ConfigurationError, Settings
 from app.schemas.chat import BudgetPeriod, SearchFilters, SortOrder
 
 
+logger = logging.getLogger("gear_ai.llm")
+
+
 class Extraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     intent: Literal["search", "details", "availability", "pricing",
-                    "vehicle_specs", "booking_guidance", "unsupported"]
+                    "vehicle_specs", "booking_guidance", "context_question",
+                    "unsupported"]
+    question_field: Literal[
+        "location", "dates", "budget", "vehicle_type", "summary", "reason",
+    ] | None = None
     selected_index: int | None = Field(ge=1, le=50)
     reset_filters: bool
     needs_dates: bool
@@ -62,7 +70,10 @@ def extraction_schema() -> dict[str, object]:
     properties: dict[str, object] = {
         "intent": {"type": "string", "enum": ["search", "details", "availability",
                                                "pricing", "vehicle_specs", "booking_guidance",
-                                               "unsupported"]},
+                                               "context_question", "unsupported"]},
+        "question_field": {"type": ["string", "null"], "enum": [
+            "location", "dates", "budget", "vehicle_type", "summary", "reason", None,
+        ]},
         "selected_index": {"type": ["integer", "null"]},
         "reset_filters": {"type": "boolean"},
         "needs_dates": {"type": "boolean"},
@@ -116,10 +127,21 @@ class OpenAIRequirementExtractor:
 
     async def extract(self, message: str, current: SearchFilters,
                       result_titles: list[str]) -> Extraction:
+        return await self.extract_with_context(message, current, result_titles, {})
+
+    async def extract_with_context(
+        self, message: str, current: SearchFilters, result_titles: list[str],
+        conversation_context: dict[str, object],
+    ) -> Extraction:
         endpoint = "https://api.openai.com/v1/chat/completions"
         api_key = self.settings.openai_api_key
         model = self.settings.openai_model
         if not api_key or not model:
+            logger.error(
+                "OpenAI requirement extraction is not configured "
+                "(api_key_configured=%s, model_configured=%s)",
+                bool(api_key), bool(model),
+            )
             raise ConfigurationError("OpenAI needs an API key and model")
 
         system = (
@@ -152,7 +174,12 @@ class OpenAIRequirementExtractor:
             "refers to a previously shown option. "
             "Set selected_index to its one-based position in previous_results; use null if unclear. "
             "Never output a vehicle ID. Use booking_guidance for booking requests and general booking process "
-            "questions; any personal booking status cannot be checked. Use unsupported for "
+            "questions; any personal booking status cannot be checked. Use context_question for "
+            "questions about what area, dates, budget, or vehicle type the user supplied, what "
+            "the assistant is searching for, or why a detail is needed. Set question_field to "
+            "the field being asked about, or summary/reason. A question such as 'Did I say Dubai?' "
+            "must not set location. The server answers from saved state. Treat corrections as "
+            "updates to only the named fields. Use unsupported for "
             "requests outside vehicle search or guidance."
         )
         payload = {
@@ -165,6 +192,7 @@ class OpenAIRequirementExtractor:
                         {"index": index, "title": title}
                         for index, title in enumerate(result_titles, start=1)
                     ],
+                    "conversation_context": conversation_context,
                     "latest_message": message,
                 })},
             ],
@@ -192,4 +220,10 @@ class OpenAIRequirementExtractor:
             return Extraction.model_validate_json(content)
         except (asyncio.TimeoutError, httpx.HTTPError, KeyError, IndexError, TypeError, ValueError,
                 ValidationError) as exc:
+            provider_response = getattr(exc, "response", None)
+            provider_status = getattr(provider_response, "status_code", None)
+            logger.warning(
+                "OpenAI requirement extraction failed (error_type=%s, provider_status=%s)",
+                type(exc).__name__, provider_status,
+            )
             raise LLMUnavailable("Requirement extraction failed") from exc

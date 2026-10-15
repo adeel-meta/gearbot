@@ -35,10 +35,18 @@ NAMED_MONTH_RANGE = re.compile(
     rf"(?P<named_month>{MONTH_NAMES})(?:\s+(?P<year>\d{{4}}))?\b",
     re.IGNORECASE,
 )
+MONTH_FIRST_RANGE = re.compile(
+    rf"\b(?P<named_month>{MONTH_NAMES})\s+"
+    rf"(?P<start>\d{{1,2}})(?:st|nd|rd|th)?\s*"
+    rf"(?:to|through|until|[-–])\s*"
+    rf"(?P<end>\d{{1,2}})(?:st|nd|rd|th)?"
+    rf"(?:\s+(?P<year>\d{{4}}))?\b",
+    re.IGNORECASE,
+)
 BARE_DAY_RANGE = re.compile(
-    r"(?<![:\d])\b(?:from\s+)?(?P<start>\d{1,2})(?:st|nd|rd|th)?\s*"
+    r"(?<![-:\d])\b(?:from\s+)?(?P<start>\d{1,2})(?:st|nd|rd|th)?\s*"
     r"(?:to|through|until|[-–])\s*"
-    r"(?P<end>\d{1,2})(?:st|nd|rd|th)?\b(?!\s*:)",
+    r"(?P<end>\d{1,2})(?:st|nd|rd|th)?\b(?![-:\d])",
     re.IGNORECASE,
 )
 MONTH_PICKUP_DAY = re.compile(
@@ -56,7 +64,8 @@ def gear_today() -> date:
 def resolve_month_day_range(message: str, today: date) -> tuple[date, date | None] | None:
     """Resolve explicit day ranges or a pickup day without making up a year."""
     match = MONTH_DAY_RANGE.search(message)
-    named_match = NAMED_MONTH_RANGE.search(message) if match is None else None
+    named_match = (NAMED_MONTH_RANGE.search(message) or MONTH_FIRST_RANGE.search(message)
+                   if match is None else None)
     if named_match is not None:
         month = MONTHS[named_match.group("named_month").lower()]
         supplied_year = named_match.group("year")
@@ -90,4 +99,5 @@ def has_bare_day_range(message: str) -> bool:
     """Return true for a day range whose month/year is still ambiguous."""
     return (BARE_DAY_RANGE.search(message) is not None
             and MONTH_DAY_RANGE.search(message) is None
-            and NAMED_MONTH_RANGE.search(message) is None)
+            and NAMED_MONTH_RANGE.search(message) is None
+            and MONTH_FIRST_RANGE.search(message) is None)

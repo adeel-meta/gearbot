@@ -8,7 +8,7 @@ import secrets
 from typing import Literal
 from uuid import UUID, uuid4
 
-from app.schemas.chat import SearchFilters, VehicleCard
+from app.schemas.chat import ChatResponse, SearchFilters, VehicleCard
 
 
 @dataclass(frozen=True)
@@ -17,6 +17,7 @@ class PendingProtectedOperation:
     vehicle_id: str | None = None
     request_message: str = ""
     catalog_skipped: bool = False
+    criteria_revision: int | None = None
 
 
 @dataclass
@@ -26,7 +27,25 @@ class Session:
     expires_at: datetime
     filters: SearchFilters = field(default_factory=SearchFilters)
     results: list[VehicleCard] = field(default_factory=list)
-    pending_requirement: str | None = None
+    pending_requirement: Literal[
+        "location", "location_then_dates", "dates", "availability_dates",
+        "availability_times", "vehicle_type", "budget_period",
+    ] | None = None
+    pending_budget: bool = False
+    search_mode: Literal["guided", "browse"] = "browse"
+    anywhere: bool = False
+    budget_decided: bool = False
+    trip_budget: float | None = None
+    location_source: Literal["typed", "shared"] | None = None
+    field_provenance: dict[str, str] = field(default_factory=dict)
+    last_assistant_action: str | None = None
+    last_search_filters: SearchFilters | None = None
+    last_search_outcome: Literal["results", "empty", "unavailable"] | None = None
+    criteria_revision: int = 0
+    results_revision: int | None = None
+    recent_turns: list[str] = field(default_factory=list)
+    recent_responses: dict[str, tuple[str, ChatResponse]] = field(default_factory=dict)
+    recovered_after_expiry: bool = False
     pending_operation: PendingProtectedOperation | None = None
     selected_vehicle_id: str | None = None
     pending_vehicle_intent: Literal["availability"] | None = None
@@ -65,7 +84,8 @@ class SessionStore:
                 return session
         public_token = self._new_public_token()
         new_session = Session(id=uuid4(), public_token=public_token,
-                              expires_at=now + self.ttl)
+                              expires_at=now + self.ttl,
+                              recovered_after_expiry=session_id is not None)
         self.sessions[new_session.id] = new_session
         self.session_token_digests[self._session_token_digest(public_token)] = new_session.id
         if len(self.sessions) > 1000:
@@ -81,3 +101,17 @@ class SessionStore:
         internal_id = self.session_token_digests.pop(digest, None)
         if internal_id is not None:
             self.sessions.pop(internal_id, None)
+
+    def save(self, session: Session) -> None:
+        """In-memory sessions are already updated by reference."""
+        return None
+
+    async def acquire_turn(self, session_token: str) -> str | None:
+        """The conversation service supplies a process-local lock for this store."""
+        return None
+
+    async def release_turn(self, session_token: str, lease: str | None) -> None:
+        return None
+
+    def assert_turn_lease(self, session_token: str, lease: str | None) -> None:
+        return None

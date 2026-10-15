@@ -4,7 +4,7 @@ FastAPI service for conversational Gear vehicle search across Web and Mobile.
 
 ## Requirements
 
-- Python 3.14.8
+- Python 3.12+ locally (Vercel uses 3.12 from `.python-version`)
 
 ## Setup
 
@@ -21,6 +21,10 @@ For a fresh checkout, copy `.env.example` to `.env` and add local secrets there.
 ## App developer handover
 
 Integration guide for Web/Mobile teams (endpoints, sessions, auth, Vercel env): [docs/APP_DEV_HANDOVER.md](docs/APP_DEV_HANDOVER.md).
+
+## Environment files and Vercel
+
+**`.env` does not go to GitHub** (secrets stay local). Vercel does not read `.env` from the repo; add the same keys under **Project → Settings → Environment Variables** (use **Import .env** and paste your local file). Step-by-step: [docs/VERCEL_ENV.md](docs/VERCEL_ENV.md).
 
 ## Deploy on Vercel
 
@@ -57,7 +61,7 @@ For an offline sample conversation, explicitly set `DEMO_MODE=true` and `DEMO_EX
 
 1. `I need a family car for the weekend`
 2. `Dubai Marina`
-3. Give exact dates such as `2026-10-10 to 2026-10-12`
+3. Give future dates such as `2026-10-20 to 2026-10-22`
 4. `Under AED 500`, then `View option 1`
 
 To exercise your configured OpenAI API key while keeping sample vehicles, set `DEMO_MODE=true` and `DEMO_EXTRACTOR=hosted`. The provided environment files set `OPENAI_MODEL` to [`gpt-6-luna`](https://developers.openai.com/api/docs/models/gpt-6-luna), which supports structured output with Chat Completions. Restart the server. The browser never receives the API key. If OpenAI is unreachable, chat returns a controlled unavailable response.
@@ -70,7 +74,7 @@ To inspect the authenticated type/brand catalog, run `python -m scripts.inspect_
 
 ## Chat API
 
-Web and Mobile can use `POST /api/v1/agent/chat` with a JSON `message`, optional session token and optional `context` coordinates or catalog IDs (`car_type_id`, `car_type_ids`, `brand_id`). Same-origin Web sends `X-AI-Session-Transport: cookie` on its first request and then reuses the `HttpOnly` `ai_session_id` cookie; cookie-mode responses omit the token from JSON. Mobile sends `X-AI-Session-ID` or `session_id` in the body and uses the returned token in secure local storage. The same AI session token is reused before and after Gear login; it is independent of the Gear bearer. The user bearer is forwarded only to protected Gear read routes, where Gear validates it. `POST /api/v1/agent/session/reset` deletes the current conversation; Web also clears its cookie. Natural-language type and brand names are resolved against the authenticated Gear catalog; if login is required, the pending search resumes in the same conversation. The browser supplies coordinates, with permission, for “near me” prompts.
+Web and Mobile can use `POST /api/v1/agent/chat` with a JSON `message`, optional `turn_id`, optional session token and optional `context` coordinates or catalog IDs (`car_type_id`, `car_type_ids`, `brand_id`). Supply a fresh 16–128 character `turn_id` for each user turn and reuse it only when retrying that same turn; a reused ID with different text returns HTTP 409. Same-origin Web sends `X-AI-Session-Transport: cookie` on its first request and then reuses the `HttpOnly` `ai_session_id` cookie; cookie-mode responses omit the token from JSON. Mobile sends `X-AI-Session-ID` or `session_id` in the body and uses the returned token in secure local storage. The same AI session token is reused before and after Gear login; it is independent of the Gear bearer. The user bearer is forwarded only to protected Gear read routes, where Gear validates it. `POST /api/v1/agent/session/reset` deletes the current conversation; Web also clears its cookie. Natural-language type and brand names are resolved against the authenticated Gear catalog; if login is required, the pending search resumes in the same conversation. The browser supplies coordinates, with permission, for “near me” prompts.
 Responses include `X-Request-ID` for troubleshooting; request logs contain the route and status, not message text or credentials.
 
 ```bash
@@ -79,7 +83,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/agent/chat \
   -d '{"message":"Show cars in Dubai under AED 500"}'
 ```
 
-The verified public `getCars` response uses `data.cars`; the mapper also accepts a `data` list or a `data.vehicles`, `data.results`, or `data.items` list. The local session store resets on restart and should be replaced before multi-worker deployment. Details and availability require a car selected from the prior result list plus the user's Gear bearer token. Checkout totals remain disabled until the endpoint's behavior and response are confirmed. Booking requests return a `SIGN_IN` action and tell the user to complete booking in the Gear app; the agent does not create bookings.
+The verified public `getCars` response uses `data.cars`; the mapper also accepts a `data` list or a `data.vehicles`, `data.results`, or `data.items` list. Local development uses in-memory sessions, which reset on restart. Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to share conversations across workers; production refuses to start without them. If that store is unavailable, chat returns HTTP 503 rather than silently forgetting context. Expired sessions get a new token and a one-time explanation. Details and availability require a car selected from the current result list plus the user's Gear bearer token. Checkout totals remain disabled until the endpoint's behavior and response are confirmed. Booking requests return a `SIGN_IN` action and tell the user to complete booking in the Gear app; the agent does not create bookings.
 
 A card's `price` uses Gear's numeric `price`, `day_price_with_fee`, or `day_price` field in that order and labels it as a daily rate, never as a checkout total. Live ratings use `avg_rating`. Verified `no_seats`, type, brand, fuel, mileage, transmission, luggage, and explicit family-suitability fields are mapped when Gear returns them. Missing attributes produce a data-unavailable response instead of a guessed recommendation.
 
@@ -91,6 +95,11 @@ The app uses the OpenAI API for requirement extraction. Configure `OPENAI_API_KE
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
+
+For an opt-in hosted language check (four OpenAI API calls, no Gear reads), run
+`python3 -m scripts.eval_hosted_extractor` after configuring `OPENAI_API_KEY`.
+See [docs/smart-assistant-plan.md](docs/smart-assistant-plan.md) for the guided
+search contract, regression scenarios, and deployment verification record.
 
 ## Read-only MongoDB schema inspection
 

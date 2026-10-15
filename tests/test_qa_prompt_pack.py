@@ -1,6 +1,7 @@
 """QA prompt pack: grounding, memory, auth, injection, and failure modes."""
 
 import asyncio
+from datetime import date
 
 import httpx
 import pytest
@@ -59,7 +60,7 @@ def service(extractor_values, gear=None):
     return ConversationService(
         FakeExtractor(extractor_values),
         gear if gear is not None else ScriptedGear(),
-        SessionStore(1800),
+        SessionStore(1800), today=lambda: date(2026, 10, 6),
     )
 
 
@@ -261,15 +262,24 @@ def test_new_search_clears_previous_city_type_and_budget():
 
 
 def test_duration_without_dates_asks_one_date_question():
-    response = asyncio.run(service([extraction(needs_dates=True)]).chat(
-        ChatRequest(message="I need a car for 3 days."), None,
-    ))
-    assert response.status == "clarification"
-    assert "date" in response.message.lower()
-    assert "brand" not in response.message.lower()
-    assert "seat" not in response.message.lower()
-    assert "fuel" not in response.message.lower()
-    assert "transmission" not in response.message.lower()
+    chat = service([extraction(needs_dates=True)])
+
+    async def scenario():
+        area = await chat.chat(ChatRequest(message="I need a car for 3 days."), None)
+        assert area.status == "clarification"
+        assert "area" in area.message.lower()
+        dates = await chat.chat(ChatRequest(
+            message="Dubai", session_id=area.session_id,
+        ), None)
+        assert dates.status == "clarification"
+        assert "start" in dates.message.lower()
+        assert dates.applied_filters.rental_days == 3
+        assert "brand" not in dates.message.lower()
+        assert "seat" not in dates.message.lower()
+        assert "fuel" not in dates.message.lower()
+        assert "transmission" not in dates.message.lower()
+
+    asyncio.run(scenario())
 
 
 def test_general_inventory_search_does_not_require_dates_or_budget():
@@ -576,7 +586,6 @@ def test_multiturn_state_accumulates_verified_filters_only():
         extraction(),
         extraction(from_date="2026-10-10", to_date="2026-10-12",
                    from_time="10:00", to_time="18:00"),
-        extraction(sort_by="price_low"),
         extraction(intent="details", selected_index=1),
     ], gear)
 

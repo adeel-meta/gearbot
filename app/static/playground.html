@@ -87,7 +87,7 @@
       <header><div><h2>Vehicle search assistant</h2><p>Refreshing keeps this conversation; New chat clears its filters.</p></div><button class="reset" id="reset" type="button">New chat</button></header>
       <div class="banner" id="banner" role="status">Checking data source…</div>
       <div class="feed" id="feed" role="log" aria-live="polite" aria-label="Chat messages"></div>
-      <div class="composer"><form id="chat-form"><input id="message" aria-label="Your message" placeholder="Ask for a car, area, or budget…" maxlength="2000" required autocomplete="off"><button id="send" type="submit">Send</button></form><div class="hint">Try “Show cars in Dubai under AED 500”. Suggested chips fill the message box for editing.</div></div>
+      <div class="composer"><form id="chat-form"><input id="message" aria-label="Your message" placeholder="Ask for a car, area, or budget…" maxlength="2000" required autocomplete="off"><button id="send" type="submit">Send</button></form><div class="hint">Try “Show cars in Dubai under AED 500”. Tap a suggestion to use it as your message.</div></div>
     </main>
   </div>
   <script>
@@ -141,12 +141,6 @@
       gearTokenInput.focus();
     });
 
-    function futureDate(days) {
-      const date = new Date();
-      date.setDate(date.getDate() + days);
-      return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
-    }
-
     function node(tag, className, content) {
       const element = document.createElement(tag);
       if (className) element.className = className;
@@ -161,22 +155,7 @@
         const button = node('button', '', suggestion);
         button.type = 'button';
         button.addEventListener('click', () => {
-          let prompt = suggestion;
-          if (suggestion === 'Change budget' || suggestion === 'Increase budget') prompt = 'Under AED 800';
-          if (suggestion === 'Nearby areas') prompt = 'In Abu Dhabi';
-          if (suggestion === 'Change dates') prompt = futureDate(2) + ' to ' + futureDate(4);
-          if (suggestion === 'Cheapest first') prompt = 'Sort by cheapest first';
-          if (suggestion === 'Find a car') prompt = 'Show cars in Dubai under AED 500';
-          if (suggestion === 'Cars near me') prompt = 'Cars near me';
-          if (suggestion === 'Family trip') prompt = 'I need something for a family trip in Dubai';
-          if (suggestion === 'Budget cars') prompt = 'Budget cars in Dubai under AED 300';
-          if (suggestion === 'How booking works') prompt = 'How does booking work?';
-          if (suggestion === 'Show similar cars') prompt = 'Show similar cars';
-          if (suggestion.startsWith('Check availability')) {
-            const option = suggestion.match(/option\s+(\d+)/i);
-            prompt = 'Is option ' + (option ? option[1] : '1') + ' available from ' + futureDate(2) + ' 10:00 to ' + futureDate(4) + ' 18:00?';
-          }
-          input.value = prompt;
+          input.value = suggestion;
           input.focus();
         });
         row.append(button);
@@ -317,7 +296,7 @@
           if (!token || /\s/.test(token)) throw new Error('Paste a Gear token without spaces or line breaks.');
           headers.Authorization = 'Bearer ' + token;
         }
-        const body = {message, context: await contextForMessage(message)};
+        const body = {message, turn_id: crypto.randomUUID(), context: await contextForMessage(message)};
         const response = await fetch('/api/v1/agent/chat', {method: 'POST', headers, credentials: 'same-origin', body: JSON.stringify(body)});
         const result = await response.json();
         if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'The chat request failed.');

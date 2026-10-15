@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import date
 
 import httpx
 
@@ -15,7 +16,7 @@ from app.services.conversation import ConversationService
 
 def demo_service():
     return ConversationService(DemoExtractor(), DemoGearClient(), SessionStore(1800),
-                               data_source="demo")
+                               data_source="demo", today=lambda: date(2026, 10, 6))
 
 
 def test_demo_conversation_refines_filters_and_uses_only_sample_inventory():

@@ -28,6 +28,8 @@ class Settings:
     demo_mode: bool = False
     demo_extractor: str = "local"
     cors_allow_origins: tuple[str, ...] = ()
+    upstash_redis_rest_url: str = ""
+    upstash_redis_rest_token: str = ""
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -65,6 +67,12 @@ class Settings:
         prefix = os.getenv("GEAR_API_PREFIX", "/Gear/api").strip()
         if not prefix.startswith("/") or "//" in prefix or ".." in prefix:
             raise ConfigurationError("GEAR_API_PREFIX must be an absolute URL path")
+        redis_url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+        redis_token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+        if bool(redis_url) != bool(redis_token):
+            raise ConfigurationError("Both Upstash REST URL and token must be configured")
+        if app_env == "production" and not redis_url:
+            raise ConfigurationError("Production requires shared sessions (Upstash Redis REST)")
         return cls(
             openai_model=os.getenv("OPENAI_MODEL", "gpt-6-luna").strip(),
             openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
@@ -80,6 +88,8 @@ class Settings:
             demo_mode=demo_mode,
             demo_extractor=demo_extractor,
             cors_allow_origins=cors_allow_origins,
+            upstash_redis_rest_url=redis_url,
+            upstash_redis_rest_token=redis_token,
         )
 
 

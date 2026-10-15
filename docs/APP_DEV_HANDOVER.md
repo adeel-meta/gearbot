@@ -223,6 +223,8 @@ Safe for app devs without production Gear credentials:
 | `OPENAI_MODEL` | `gpt-6-luna` | Or another supported model |
 | `CORS_ALLOW_ORIGINS` | your web origins | For cross-origin browser calls |
 | `SESSION_TTL_SECONDS` | `1800` | AI session lifetime |
+| `UPSTASH_REDIS_REST_URL` | *(HTTPS URL)* | Shared AI sessions; required in production |
+| `UPSTASH_REDIS_REST_TOKEN` | *(secret)* | Writable REST token; server only |
 | `REQUEST_TIMEOUT` | `15` | Upstream HTTP timeout |
 
 ### Live Gear (pre-production / production)
@@ -242,7 +244,7 @@ Safe for app devs without production Gear credentials:
 ## Deploy on Vercel
 
 1. Connect this repository to Vercel (or run `npx vercel` from the repo root).
-2. Vercel detects FastAPI at `app/main.py` (Python 3.14 via `.python-version`).
+2. Vercel detects FastAPI at `app/main.py` (Python 3.12 via `.python-version`).
 3. Add environment variables above for **Preview** and/or **Production**.
 4. Deploy. Verify `GET /health` and `GET /docs`.
 

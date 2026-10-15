@@ -34,6 +34,8 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, max_length=2000)
+    turn_id: str | None = Field(default=None, min_length=16, max_length=128,
+                                pattern=r"^[A-Za-z0-9_-]+$")
     session_id: SessionToken | None = None
     locale: Literal["en"] = "en"
     context: ClientContext = Field(default_factory=ClientContext)

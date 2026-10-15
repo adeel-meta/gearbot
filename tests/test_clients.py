@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from dataclasses import replace
 
 import httpx
@@ -222,6 +223,28 @@ def test_available_search_forwards_documented_type_and_brand_ids():
     assert asyncio.run(client.search_available_cars(filters, "customer-token")) == []
 
 
+def test_available_search_reads_later_pages_before_local_area_filtering():
+    pages = []
+
+    def handler(request):
+        page = int(request.url.params["page"])
+        pages.append(page)
+        if page == 1:
+            cars = [{"_id": f"{index:024x}", "location": "Abu Dhabi"}
+                    for index in range(1, 51)]
+        else:
+            cars = [{"_id": f"{51:024x}", "location": "Dubai Marina"}]
+        return httpx.Response(200, json={"data": {"cars": cars}})
+
+    client = GearClient(settings(), httpx.MockTransport(handler))
+    filters = SearchFilters(from_date="2026-10-20", to_date="2026-10-22",
+                            location="Dubai Marina")
+    cars = asyncio.run(client.search_available_cars(filters, "customer-token"))
+    assert pages == [1, 2]
+    assert len(cars) == 51
+    assert cars[-1].location == "Dubai Marina"
+
+
 def test_default_locations_forwards_user_credential_and_language_header():
     def handler(request):
         assert request.url.path.endswith("/getDefaultLocations")
@@ -269,6 +292,27 @@ def test_provider_total_timeout_is_bounded():
     extractor = OpenAIRequirementExtractor(short, httpx.MockTransport(handler))
     with pytest.raises(LLMUnavailable):
         asyncio.run(extractor.extract("Cars in Dubai", SearchFilters(), []))
+
+
+def test_openai_failure_logs_safe_error_category_and_status(caplog):
+    def handler(request):
+        return httpx.Response(429, json={
+            "error": {"message": "sensitive provider detail"},
+        })
+
+    extractor = OpenAIRequirementExtractor(settings(), httpx.MockTransport(handler))
+    caplog.set_level(logging.WARNING, logger="gear_ai.llm")
+
+    with pytest.raises(LLMUnavailable):
+        asyncio.run(extractor.extract(
+            "private search string", SearchFilters(), [],
+        ))
+
+    assert "provider_status=429" in caplog.text
+    assert "HTTPStatusError" in caplog.text
+    assert "sensitive provider detail" not in caplog.text
+    assert "private search string" not in caplog.text
+    assert "test-openai-key" not in caplog.text
 
 
 def test_openai_model_override_uses_configured_model():

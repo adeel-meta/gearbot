@@ -1,6 +1,7 @@
 """Acceptance coverage for the capabilities promised to Gear users."""
 
 import asyncio
+from datetime import date
 
 from app.schemas.chat import ChatRequest, VehicleCard
 from app.security.sessions import SessionStore
@@ -9,6 +10,7 @@ from tests.test_chat_flow import FakeExtractor, FakeGear, extraction
 
 
 SUV_ID = "507f1f77bcf86cd799439012"
+TODAY = lambda: date(2026, 10, 6)
 
 
 def test_five_seater_fuel_efficient_three_day_request_keeps_duration():
@@ -20,7 +22,7 @@ def test_five_seater_fuel_efficient_three_day_request_keeps_duration():
     chat = ConversationService(FakeExtractor([
         extraction(needs_dates=True),
         extraction(from_date="2026-10-10", from_time="10:00", to_time="10:00"),
-    ]), gear, SessionStore(1800))
+    ]), gear, SessionStore(1800), today=TODAY)
 
     async def scenario():
         first = await chat.chat(ChatRequest(
@@ -53,7 +55,7 @@ def test_suv_near_location_resolves_verified_catalog_name():
     chat = ConversationService(FakeExtractor([
         extraction(needs_location=True, needs_dates=True, sort_by="distance"),
         extraction(from_date="2026-10-10", to_date="2026-10-12"),
-    ]), gear, SessionStore(1800))
+    ]), gear, SessionStore(1800), today=TODAY)
 
     async def scenario():
         first = await chat.chat(ChatRequest(
@@ -80,7 +82,7 @@ def test_date_based_availability_post_filters_location_from_verified_cards():
     gear = FakeGear([dubai, sharjah])
     chat = ConversationService(FakeExtractor([
         extraction(location="Dubai", from_date="2026-10-10", to_date="2026-10-12"),
-    ]), gear, SessionStore(1800))
+    ]), gear, SessionStore(1800), today=TODAY)
 
     response = asyncio.run(chat.chat(
         ChatRequest(message="Show available cars in Dubai from 10 to 12 October 2026"),
@@ -103,7 +105,7 @@ def test_family_recommendation_uses_verified_signals_for_ranking():
     ]), FakeGear([compact, family]), SessionStore(1800))
 
     response = asyncio.run(chat.chat(
-        ChatRequest(message="Find a car suitable for family travel in Dubai."), None,
+        ChatRequest(message="Show cars suitable for family travel in Dubai."), None,
     ))
 
     assert response.status == "results"

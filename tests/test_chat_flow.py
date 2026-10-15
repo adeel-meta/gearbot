@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date
 
 import httpx
 import pytest
@@ -72,7 +73,7 @@ def test_clarification_then_refinement_retains_validated_filters():
         extraction(location="Dubai Marina", needs_dates=True),
         extraction(from_date="2026-10-10", to_date="2026-10-12", max_price=700),
         extraction(max_price=500),
-    ]), gear, SessionStore(1800))
+    ]), gear, SessionStore(1800), today=lambda: date(2026, 10, 6))
 
     async def scenario():
         first = await service.chat(ChatRequest(message="Family car this weekend"), "customer-a")
@@ -232,7 +233,7 @@ def test_details_and_availability_use_only_previous_gear_result_id():
         extraction(intent="availability", selected_index=1,
                    from_date="2026-10-10", to_date="2026-10-12",
                    from_time="10:00", to_time="18:00"),
-    ]), gear, SessionStore(1800))
+    ]), gear, SessionStore(1800), today=lambda: date(2026, 10, 6))
 
     async def scenario():
         first = await service.chat(ChatRequest(message="Cars in Dubai"), "customer-a")
@@ -262,7 +263,7 @@ def test_anonymous_user_gets_sign_in_for_protected_follow_ups_and_session_contin
                    from_date="2026-10-10", to_date="2026-10-12",
                    from_time="10:00", to_time="18:00"),
         extraction(intent="availability", selected_index=1),
-    ]), gear, SessionStore(1800))
+    ]), gear, SessionStore(1800), today=lambda: date(2026, 10, 6))
 
     async def scenario():
         first = await service.chat(ChatRequest(message="Cars in Dubai"), None)
