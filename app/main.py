@@ -19,19 +19,22 @@ app = FastAPI(
 )
 app.include_router(chat_router)
 
-if settings.cors_allow_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=list(settings.cors_allow_origins),
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=[
-            "Authorization",
-            "Content-Type",
-            "X-AI-Session-ID",
-            "X-AI-Session-Transport",
-        ],
-    )
+# Always enable CORS for Gear web (localhost + production). Without this,
+# browsers block /api/v1/agent/chat while mobile clients keep working.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.cors_allow_origins),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "X-AI-Session-ID",
+        "X-AI-Session-Transport",
+    ],
+    expose_headers=["X-AI-Session-ID", "X-Request-ID"],
+)
 
 logger = logging.getLogger("gear_ai.requests")
 

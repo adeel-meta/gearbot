@@ -60,10 +60,22 @@ class Settings:
             raise ConfigurationError("DEBUG must be false in staging and production")
         if app_env == "production" and demo_mode:
             raise ConfigurationError("DEMO_MODE must be false in production")
+        # Browser clients (Gear web) need CORS; mobile apps do not.
+        default_cors_origins = (
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:4173",
+            "http://127.0.0.1:4173",
+            "https://gearapp.ae",
+            "https://www.gearapp.ae",
+            "https://app.gearapp.ae",
+        )
         cors_raw = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
-        cors_allow_origins = tuple(
+        env_cors_origins = tuple(
             origin.strip() for origin in cors_raw.split(",") if origin.strip()
         )
+        # Env list replaces defaults when set; otherwise ship safe web defaults.
+        cors_allow_origins = env_cors_origins or default_cors_origins
         prefix = os.getenv("GEAR_API_PREFIX", "/Gear/api").strip()
         if not prefix.startswith("/") or "//" in prefix or ".." in prefix:
             raise ConfigurationError("GEAR_API_PREFIX must be an absolute URL path")
