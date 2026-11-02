@@ -162,6 +162,8 @@ def skips_budget(message: str) -> bool:
 
 def context_question(message: str) -> ContextField | None:
     value = normalized(message)
+    if value == "location" and message.strip().endswith("?"):
+        return "location"
     value = re.sub(r"\bwat\b", "what", value)
     value = re.sub(r"\bwhre\b", "where", value)
     value = re.sub(r"\bwhyy\b", "why", value)

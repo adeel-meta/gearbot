@@ -1,7 +1,7 @@
 """Short-lived conversations addressed independently from Gear login tokens."""
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 import hashlib
 import hmac
@@ -50,6 +50,7 @@ class Session:
     pending_operation: PendingProtectedOperation | None = None
     selected_vehicle_id: str | None = None
     pending_vehicle_intent: Literal["availability"] | None = None
+    date_prompt_anchor: date | None = None
     catalog_cache: dict[str, Any] | None = None
     catalog_cache_key: str | None = None
 

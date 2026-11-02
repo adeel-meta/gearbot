@@ -19,6 +19,7 @@ class ClientContext(BaseModel):
 
     lat: float | None = Field(default=None, ge=-90, le=90)
     lng: float | None = Field(default=None, ge=-180, le=180)
+    location_shared: bool = False
     car_type_id: ObjectIdText | None = None
     car_type_ids: list[ObjectIdText] | None = Field(default=None, min_length=1, max_length=20)
     brand_id: ObjectIdText | None = None
@@ -40,6 +41,8 @@ class ClientContext(BaseModel):
     def coordinates_together(self) -> "ClientContext":
         if (self.lat is None) != (self.lng is None):
             raise ValueError("lat and lng must be supplied together")
+        if self.location_shared and self.lat is None:
+            raise ValueError("location_shared requires lat and lng")
         if self.car_type_id and self.car_type_ids:
             raise ValueError("use one car type ID filter at a time")
         return self

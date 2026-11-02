@@ -1,6 +1,6 @@
 """Resolve unambiguous relative rental dates using Gear's local calendar."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import re
 from zoneinfo import ZoneInfo
 
@@ -59,6 +59,28 @@ MONTH_PICKUP_DAY = re.compile(
 
 def gear_today() -> date:
     return datetime.now(GEAR_TIMEZONE).date()
+
+
+def dates_prompt_anchor(today: date | None = None) -> date:
+    """Same calendar month users see in the dates example (today + 7 days)."""
+    return (today or gear_today()) + timedelta(days=7)
+
+
+def resolve_bare_day_range_with_anchor(
+    message: str, anchor: date,
+) -> tuple[date, date] | None:
+    """Apply bare pickup/return days to the month shown in the dates prompt."""
+    if not has_bare_day_range(message):
+        return None
+    match = BARE_DAY_RANGE.search(message)
+    if match is None:
+        return None
+    start_day, end_day = int(match.group("start")), int(match.group("end"))
+    start = date(anchor.year, anchor.month, start_day)
+    end = date(anchor.year, anchor.month, end_day)
+    if end < start:
+        raise ValueError("Return day must be on or after pickup day")
+    return start, end
 
 
 def resolve_month_day_range(

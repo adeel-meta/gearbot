@@ -31,7 +31,13 @@ from app.guardrails.policy import (
 )
 from app.schemas.chat import ChatAction, ChatRequest, ChatResponse, SearchFilters, VehicleCard
 from app.security.sessions import PendingProtectedOperation, Session, SessionStore
-from app.services.dates import gear_today, has_bare_day_range, resolve_month_day_range
+from app.services.dates import (
+    dates_prompt_anchor,
+    gear_today,
+    has_bare_day_range,
+    resolve_bare_day_range_with_anchor,
+    resolve_month_day_range,
+)
 from app.services.dialogue_policy import (
     cancels_pending_change,
     change_request,
@@ -352,7 +358,9 @@ class ConversationService:
         needs_dates = (
             extracted.needs_dates or (filters.rental_days is not None and filters.from_date is None)
         ) and not (filters.from_date and filters.to_date)
-        if extracted.needs_location and not session.location_locked and request.context.lat is None:
+        if (extracted.needs_location and not session.location_locked
+                and not (request.context.location_shared
+                         and request.context.lat is not None)):
             session.pending_requirement = ("location_then_dates" if needs_dates
                                            else "location")
             prompt = near_me_prompt() if extracted.sort_by == "distance" else location_prompt()
@@ -373,6 +381,7 @@ class ConversationService:
                 session.pending_requirement = None
             else:
                 session.pending_requirement = "dates"
+                self._remember_date_prompt(session)
                 prompt = dates_prompt(
                     pickup_only=(filters.from_date is None
                                  and (filters.to_date is not None
@@ -500,6 +509,7 @@ class ConversationService:
             return self._response(session, "clarification", budget_amount_prompt())
         if target == "dates":
             session.pending_requirement = "dates"
+            self._remember_date_prompt(session)
             return self._response(session, "clarification", dates_prompt(today=self.today()))
         if target == "location":
             session.location_locked = False
@@ -575,6 +585,7 @@ class ConversationService:
         session.selected_vehicle_id = None
         session.pending_vehicle_intent = None
         session.results = []
+        session.date_prompt_anchor = None
         session.criteria_revision += 1
         return await self._continue_search(session, token)
 
@@ -582,6 +593,22 @@ class ConversationService:
         self, session: Session, request: ChatRequest, token: str | None,
     ) -> ChatResponse | None:
         message = request.message
+        denied_location = re.search(
+            r"\b(?:i\s+have\s+not|i\s+haven'?t|i\s+did\s+not|i\s+didn'?t)\s+shared?\b",
+            message, re.IGNORECASE,
+        ) and re.search(r"\blocation\b", message, re.IGNORECASE)
+        if denied_location:
+            session.filters = session.filters.model_copy(update={
+                "lat": None, "lng": None,
+            })
+            session.location_source = None
+            session.field_provenance.pop("location", None)
+            session.location_locked = bool(session.filters.location or session.anywhere)
+            session.criteria_revision += 1
+            return self._response(
+                session, "clarification",
+                "You're right — you haven't shared a location. Which city or area should I search?",
+            )
         if handled := await self._apply_local_decision(session, message, token):
             return handled
         if normalized(message) in {
@@ -621,7 +648,7 @@ class ConversationService:
                 session.criteria_revision += 1
                 return await self._continue_search(session, token)
             if near_me_request(message):
-                if request.context.lat is None:
+                if not request.context.location_shared or request.context.lat is None:
                     session.pending_requirement = "location"
                     return self._response(session, "clarification", near_me_prompt())
                 session.filters = session.filters.model_copy(update={
@@ -789,6 +816,9 @@ class ConversationService:
             )
         return None
 
+    def _remember_date_prompt(self, session: Session) -> None:
+        session.date_prompt_anchor = dates_prompt_anchor(self.today())
+
     async def _continue_search(self, session: Session, token: str | None) -> ChatResponse:
         question = next_question(
             session.search_mode, session.filters, anywhere=session.anywhere,
@@ -801,6 +831,7 @@ class ConversationService:
             )
         if question == "dates":
             session.pending_requirement = "dates"
+            self._remember_date_prompt(session)
             return self._response(
                 session, "clarification", dates_prompt(
                     pickup_only=session.filters.from_date is None and (
@@ -1235,6 +1266,12 @@ class ConversationService:
         cars: list[VehicleCard], filters: SearchFilters, *, apply_unforwarded: bool = False,
     ) -> tuple[list[VehicleCard], str | None, str | None]:
         filtered = list(cars)
+        if filters.max_price is not None:
+            filtered = [car for car in filtered
+                        if car.price is None or car.price <= filters.max_price]
+        if filters.min_price is not None:
+            filtered = [car for car in filtered
+                        if car.price is None or car.price >= filters.min_price]
         required_fields = (
             (filters.seats is not None, "seating capacity", lambda car: car.seats is not None),
             (filters.fuel_type is not None, "fuel type", lambda car: car.fuel_type is not None),
@@ -1430,6 +1467,7 @@ class ConversationService:
             filters = session.filters
             if not (filters.from_date and filters.to_date):
                 session.pending_requirement = "availability_dates"
+                self._remember_date_prompt(session)
                 return self._response(
                     session, "clarification",
                     dates_prompt(
@@ -1584,19 +1622,28 @@ class ConversationService:
             session.selected_vehicle_id = None
             session.pending_vehicle_intent = None
             session.results = []
+            session.date_prompt_anchor = None
+        date_pending = session.pending_requirement in {
+            "dates", "availability_dates", "location", "location_then_dates",
+        } or session.pending_vehicle_intent == "availability"
         try:
             relative_dates = resolve_month_day_range(
                 request.message,
                 self.today(),
-                allow_bare=session.pending_requirement in {
-                    "dates", "availability_dates", "location", "location_then_dates",
-                } or session.pending_vehicle_intent == "availability"
-                or bool(extracted.from_date or extracted.to_date),
+                allow_bare=date_pending or bool(extracted.from_date or extracted.to_date),
             )
+            if relative_dates is None and date_pending:
+                anchor = session.date_prompt_anchor or dates_prompt_anchor(self.today())
+                relative_dates = resolve_bare_day_range_with_anchor(
+                    request.message, anchor,
+                )
         except ValueError:
-            return self._response(session, "clarification",
-                                  "Those days aren't a valid pickup and return range for that month. "
-                                  "Which days should I use?")
+            anchor = session.date_prompt_anchor or dates_prompt_anchor(self.today())
+            return self._response(
+                session, "clarification",
+                f"Those days aren't valid in {anchor.strftime('%B %Y')}. "
+                f"{dates_prompt(today=self.today())}",
+            )
         extracted_dates_are_iso = False
         if extracted.from_date and extracted.to_date:
             try:
@@ -1609,10 +1656,9 @@ class ConversationService:
             relative_dates is None
             and has_bare_day_range(request.message)
             and not extracted_dates_are_iso
+            and not date_pending
             and bool(extracted.from_date or extracted.to_date
-                     or session.pending_vehicle_intent == "availability"
-                     or session.pending_requirement in {"dates", "availability_dates",
-                                                        "location", "location_then_dates"})
+                     or session.pending_vehicle_intent == "availability")
         )
         if ambiguous_day_range:
             updates.pop("from_date", None)
@@ -1657,7 +1703,7 @@ class ConversationService:
                 existing["rental_days"] = max(1, (dropoff - pickup).days)
             except (TypeError, ValueError):
                 pass
-        if request.context.lat is not None:
+        if request.context.location_shared and request.context.lat is not None:
             existing["lat"] = request.context.lat
             existing["lng"] = request.context.lng
         if request.context.car_type_id is not None:
@@ -1683,7 +1729,7 @@ class ConversationService:
             session.anywhere = False
             session.location_locked = True
             session.field_provenance["location"] = "typed"
-        if request.context.lat is not None:
+        if request.context.location_shared and request.context.lat is not None:
             session.location_source = "shared"
             session.anywhere = False
             session.location_locked = True
