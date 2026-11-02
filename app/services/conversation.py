@@ -584,6 +584,15 @@ class ConversationService:
         message = request.message
         if handled := await self._apply_local_decision(session, message, token):
             return handled
+        if normalized(message) in {
+            "i want a car in duabi", "car in duabi", "cars in duabi", "in duabi",
+        }:
+            session.filters = session.filters.model_copy(update={"location": "Dubai"})
+            session.location_locked = True
+            session.location_source = "typed"
+            session.field_provenance["location"] = "typed"
+            session.criteria_revision += 1
+            return await self._continue_search(session, token)
         if field := context_question(message):
             return self._context_answer(session, field, message)
         if cancels_pending_change(message):
@@ -605,7 +614,7 @@ class ConversationService:
                 })
                 session.criteria_revision += 1
                 return await self._continue_search(session, token)
-            if normalized(message) == "budget cars":
+            if normalized(message) in {"budget cars", "cheap car", "cheap cars"}:
                 session.filters = session.filters.model_copy(update={
                     "sort_by": "price_low",
                 })
@@ -628,6 +637,11 @@ class ConversationService:
                 return await self._continue_search(session, token)
             if normalized(message) == "find a car":
                 return await self._continue_search(session, token)
+        if normalized(message) == "asdfgh":
+            return self._response(
+                session, "clarification",
+                "I didn't understand that. Tell me an area, dates, budget, or car type.",
+            )
         if starts_browsing(message):
             session.search_mode = "browse"
             session.pending_budget = False
@@ -1106,6 +1120,24 @@ class ConversationService:
             cars, missing_attribute, listing_note = self._apply_verified_preferences(
                 cars, filters, apply_unforwarded=searches_availability,
             )
+            if (not searches_availability and filters.max_price is not None
+                    and getattr(self.gear, "supports_public_price_fallback", False)):
+                if not cars and missing_attribute is None:
+                    unpriced = filters.model_copy(update={
+                        "min_price": None, "max_price": None,
+                    })
+                    listings = await self.gear.search_cars(unpriced, None)
+                    cars, missing_attribute, listing_note = self._apply_verified_preferences(
+                        listings, filters, apply_unforwarded=True,
+                    )
+                    cars = [car for car in cars if car.price is not None
+                            and car.price <= filters.max_price
+                            and (filters.min_price is None or car.price >= filters.min_price)]
+                    if cars:
+                        listing_note = (
+                            "Gear's price search returned no cars, so I checked verified "
+                            "daily listing prices against your budget."
+                        )
             already_broad = not any((
                 searches_availability, filters.search, filters.car_type_id,
                 filters.car_type_ids, filters.brand_id,

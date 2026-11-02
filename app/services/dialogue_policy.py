@@ -138,7 +138,7 @@ def near_me_request(message: str) -> bool:
 
 def starts_guided_search(message: str) -> bool:
     value = normalized(message)
-    return (value in {"family trip", "budget cars", "cars near me"}
+    return (value in {"family trip", "budget cars", "cheap car", "cheap cars", "cars near me"}
             or near_me_request(message)
             or value == "find a car" or value.startswith(("find a car ", "i need a car ")))
 
