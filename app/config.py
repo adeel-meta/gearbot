@@ -27,6 +27,7 @@ class Settings:
     port: int = 8000
     demo_mode: bool = False
     demo_extractor: str = "local"
+    openai_extract_model: str = ""
     cors_allow_origins: tuple[str, ...] = ()
     upstash_redis_rest_url: str = ""
     upstash_redis_rest_token: str = ""
@@ -74,8 +75,9 @@ class Settings:
         env_cors_origins = tuple(
             origin.strip() for origin in cors_raw.split(",") if origin.strip()
         )
-        # Env list replaces defaults when set; otherwise ship safe web defaults.
-        cors_allow_origins = env_cors_origins or default_cors_origins
+        # Extra env origins are added. Defaults stay so a partial env list cannot
+        # drop gearapp.ae.
+        cors_allow_origins = tuple(dict.fromkeys((*default_cors_origins, *env_cors_origins)))
         prefix = os.getenv("GEAR_API_PREFIX", "/Gear/api").strip()
         if not prefix.startswith("/") or "//" in prefix or ".." in prefix:
             raise ConfigurationError("GEAR_API_PREFIX must be an absolute URL path")
@@ -85,8 +87,11 @@ class Settings:
             raise ConfigurationError("Both Upstash REST URL and token must be configured")
         if app_env == "production" and not redis_url:
             raise ConfigurationError("Production requires shared sessions (Upstash Redis REST)")
+        openai_model = os.getenv("OPENAI_MODEL", "gpt-6-luna").strip()
+        extract_model = os.getenv("OPENAI_EXTRACT_MODEL", "").strip() or openai_model
         return cls(
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-6-luna").strip(),
+            openai_model=openai_model,
+            openai_extract_model=extract_model,
             openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
             gear_api_base_url=os.getenv("GEAR_API_BASE_URL", "").strip().rstrip("/"),
             gear_api_prefix=prefix.rstrip("/"),

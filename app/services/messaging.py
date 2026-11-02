@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from app.schemas.chat import SearchFilters, VehicleCard
-from app.services.dates import gear_today
+from app.services.dates import GEAR_TIMEZONE, gear_today
 from app.services.dialogue_policy import dates_description, no_results_actions
 
 
@@ -23,6 +23,36 @@ def opening_message() -> str:
         "Hey — I'm here to help you find the right rental. Tell me what you need: "
         "a location, dates, budget, or even just the kind of trip you're planning."
     )
+
+
+def greeting_message(
+    filters: SearchFilters | None = None,
+    pending: str | None = None,
+    *,
+    pending_budget: bool = False,
+    display_name: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    moment = now or datetime.now(GEAR_TIMEZONE)
+    if moment.hour < 12:
+        hello = "Good morning"
+    elif moment.hour < 17:
+        hello = "Good afternoon"
+    else:
+        hello = "Good evening"
+    if display_name:
+        hello = f"{hello}, {display_name}"
+    if pending_budget:
+        return f"{hello}. {budget_amount_prompt()}"
+    if pending in {"dates", "availability_dates"}:
+        return f"{hello}. {dates_prompt()}"
+    if pending == "availability_times":
+        return f"{hello}. What pickup and return times should I use?"
+    if pending in {"location", "location_then_dates"}:
+        return f"{hello}. {location_prompt(filters)}"
+    if pending == "vehicle_type":
+        return f"{hello}. What vehicle type would you like?"
+    return f"{hello}. {opening_message()}"
 
 
 def near_me_prompt() -> str:

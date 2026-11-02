@@ -7,9 +7,9 @@ from app.schemas.chat import VehicleCard
 
 SpecTopic = Literal["seats", "mileage", "fuel", "transmission", "luggage", "overview"]
 
-GREETING = re.compile(
-    r"^(?:hi|hello|hey|good (?:morning|afternoon|evening)|salam|assalamu? alaikum)"
-    r"(?:\s+there)?[!.\s]*$",
+GREETING_LEAD = re.compile(
+    r"^(?:good\s+(?:morning|afternoon|evening)|assalamu?\s+alaikum|salam|hello|hey|hi)"
+    r"(?:\s+there)?(?=$|[\s,!.])",
     re.IGNORECASE,
 )
 FOCUS_VEHICLE = re.compile(
@@ -36,8 +36,20 @@ LUGGAGE_QUESTION = re.compile(
 )
 
 
+def split_greeting(message: str) -> str | None:
+    """Text after a leading greeting, or None when the message does not start with one.
+
+    An empty string means the message is only a greeting.
+    """
+    text = message.strip()
+    match = GREETING_LEAD.match(text)
+    if not match:
+        return None
+    return text[match.end():].strip(" \t,!.?-–—")
+
+
 def is_greeting(message: str) -> bool:
-    return bool(GREETING.match(message.strip()))
+    return split_greeting(message) == ""
 
 
 def vehicle_spec_topic(message: str) -> SpecTopic | None:

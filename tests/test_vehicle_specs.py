@@ -41,3 +41,53 @@ def test_greeting_gets_opening_not_generic_guidance():
     assert response.status == "guidance"
     assert "find the right rental" in response.message
     assert response.suggestions
+
+
+def test_greeting_with_a_request_keeps_the_search():
+    service = ConversationService(
+        FakeExtractor([extraction(location="Dubai")]), FakeGear(), SessionStore(1800),
+    )
+    response = asyncio.run(service.chat(
+        ChatRequest(message="Hi, I need a car in Dubai"), None,
+    ))
+    assert response.applied_filters.location == "Dubai"
+    assert "find the right rental" not in response.message.lower()
+
+
+def test_greeting_resumes_a_pending_location_question():
+    service = ConversationService(FakeExtractor([]), FakeGear(), SessionStore(1800))
+
+    async def scenario():
+        first = await service.chat(ChatRequest(message="Find a car"), None)
+        assert first.status == "clarification"
+        resumed = await service.chat(
+            ChatRequest(message="hello", session_id=first.session_id,
+                        context={"display_name": "Bilal DB"}),
+            None,
+        )
+        assert "Bilal" in resumed.message
+        assert "area" in resumed.message.lower() or "where" in resumed.message.lower()
+        assert "find the right rental" not in resumed.message.lower()
+
+    asyncio.run(scenario())
+
+
+def test_catalog_lookup_is_cached_for_the_signed_in_session():
+    gear = FakeGear()
+    service = ConversationService(FakeExtractor([
+        extraction(location="Dubai", car_type_name="SUV"),
+        extraction(brand_name="Toyota"),
+    ]), gear, SessionStore(1800))
+
+    async def scenario():
+        first = await service.chat(
+            ChatRequest(message="Show SUVs in Dubai"), "customer-token",
+        )
+        assert first.status == "results"
+        second = await service.chat(
+            ChatRequest(message="Toyota", session_id=first.session_id), "customer-token",
+        )
+        assert second.applied_filters.brand_id == "507f1f77bcf86cd799439013"
+        assert [call for call in gear.calls if call[0] == "catalog"] == [("catalog", "customer-token")]
+
+    asyncio.run(scenario())

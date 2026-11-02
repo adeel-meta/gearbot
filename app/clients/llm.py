@@ -135,7 +135,7 @@ class OpenAIRequirementExtractor:
     ) -> Extraction:
         endpoint = "https://api.openai.com/v1/chat/completions"
         api_key = self.settings.openai_api_key
-        model = self.settings.openai_model
+        model = self.settings.openai_extract_model or self.settings.openai_model
         if not api_key or not model:
             logger.error(
                 "OpenAI requirement extraction is not configured "

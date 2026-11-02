@@ -4,9 +4,11 @@ This document is the integration contract for **Gear Web** and **Gear Mobile**. 
 
 ## Deployed base URL
 
-After Vercel deploy, set your client base URL to the project domain, for example:
+After Vercel deploy, set your client base URL to the project domain. Production today is:
 
-`https://<your-vercel-project>.vercel.app`
+`https://gearchatbot.vercel.app`
+
+Do not call `https://gearapp.ae/api/v1/agent/*`. That host serves the Gear web app, not this API.
 
 All paths below are relative to that host.
 
@@ -17,6 +19,7 @@ All paths below are relative to that host.
 | OpenAPI JSON | `GET /openapi.json` |
 | Agent metadata | `GET /api/v1/agent/meta` |
 | Chat | `POST /api/v1/agent/chat` |
+| Streaming chat | `POST /api/v1/agent/chat/stream` |
 | Reset conversation | `POST /api/v1/agent/session/reset` |
 | Browser playground (non-production only) | `GET /chat` or `GET /playground` |
 
@@ -160,13 +163,55 @@ In **live** mode, `customer_token_needed_for_details` and `protected_features_re
 
 ## CORS (browser clients)
 
-If Web calls this API from a different origin, set server env:
+Gear web calls this API from another origin. The server always allows these origins, and any extra origins in `CORS_ALLOW_ORIGINS` are added to that list:
 
 ```bash
-CORS_ALLOW_ORIGINS=https://your-web-app.com,http://localhost:3000
+CORS_ALLOW_ORIGINS=https://gearapp.ae,https://www.gearapp.ae,https://app.gearapp.ae,http://localhost:5173
 ```
 
-Comma-separated list; credentials are allowed so cookie mode can work when origins are explicit.
+Credentials are allowed so cookie mode can work when the page is served by this API. Cross-origin Gear web should use the header session below, not cookies.
+
+---
+
+## Gear web client
+
+```javascript
+const AGENT = "https://gearchatbot.vercel.app";
+let aiSessionId = null;
+
+async function askGear(message, context = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (aiSessionId) headers["X-AI-Session-ID"] = aiSessionId;
+  const authToken = localStorage.getItem("gear_auth_token"); // data.auth_token from Gear login
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  const response = await fetch(`${AGENT}/api/v1/agent/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      message,
+      locale: "en",
+      turn_id: crypto.randomUUID(),
+      context,
+    }),
+  });
+  const body = await response.json();
+  if (body.session_id) aiSessionId = body.session_id;
+  return body;
+}
+```
+
+Map Gear login `data.auth_token` to `Authorization: Bearer`. Keep `aiSessionId` when the user signs in and retry the same request. Optional `context.display_name` is a first name used only in greeting copy.
+
+For a faster first paint, `POST /api/v1/agent/chat/stream` returns `text/event-stream`:
+
+| Event | Data |
+|-------|------|
+| `started` | `{ "message": "Looking for cars…" }` |
+| `result` | The same JSON object as `POST /chat` |
+| `done` | `{}` |
+| `error` | `{ "detail": "..." }` |
+
+Read it with `fetch` and `response.body.getReader()`. `EventSource` cannot send `POST` or `Authorization`. If the stream fails, fall back to `POST /chat`.
 
 ---
 
@@ -221,7 +266,7 @@ Safe for app devs without production Gear credentials:
 | `DEMO_EXTRACTOR` | `hosted` | Uses OpenAI on server |
 | `OPENAI_API_KEY` | *(secret)* | Server only |
 | `OPENAI_MODEL` | `gpt-6-luna` | Or another supported model |
-| `CORS_ALLOW_ORIGINS` | your web origins | For cross-origin browser calls |
+| `CORS_ALLOW_ORIGINS` | `https://gearapp.ae,https://www.gearapp.ae,https://app.gearapp.ae` | Extra browser origins. gearapp.ae defaults always stay. |
 | `SESSION_TTL_SECONDS` | `1800` | AI session lifetime |
 | `UPSTASH_REDIS_REST_URL` | *(HTTPS URL)* | Shared AI sessions; required in production |
 | `UPSTASH_REDIS_REST_TOKEN` | *(secret)* | Writable REST token; server only |

@@ -2,8 +2,10 @@
 
 import asyncio
 from datetime import date, timedelta
+import hashlib
 import logging
 import re
+from time import perf_counter
 from typing import Callable
 
 from pydantic import ValidationError
@@ -54,11 +56,11 @@ from app.services.messaging import (
     criteria_summary,
     dates_prompt,
     empty_search_prompt,
+    greeting_message,
     location_prompt,
     near_me_prompt,
     no_results_message,
     no_results_suggestions,
-    opening_message,
     results_message,
     results_suggestions,
     unavailable_vehicle_message,
@@ -68,7 +70,7 @@ from app.services.messaging import (
 from app.services.vehicle_specs import (
     SpecTopic,
     asks_about_focus_vehicle,
-    is_greeting,
+    split_greeting,
     vehicle_spec_message,
     vehicle_spec_topic,
 )
@@ -128,6 +130,19 @@ class ConversationService:
     async def _chat_turn(self, request: ChatRequest, token: str | None,
                          session: Session) -> ChatResponse:
         session.recent_turns = (session.recent_turns + [request.message])[-4:]
+        remainder = split_greeting(request.message)
+        if remainder == "":
+            return self._response(
+                session, "guidance",
+                greeting_message(
+                    session.filters, session.pending_requirement,
+                    pending_budget=session.pending_budget,
+                    display_name=request.context.display_name,
+                ),
+                suggestions=OPENING_SUGGESTIONS,
+            )
+        if remainder is not None:
+            request = request.model_copy(update={"message": remainder})
         if (session.pending_operation and token
                 and (self._automatic_resume_message(request.message)
                      or self._message_matches_pending_operation(
@@ -138,10 +153,6 @@ class ConversationService:
             return local_response
         if faq := faq_answer(request.message):
             return self._response(session, "guidance", faq[0], suggestions=faq[1])
-        if is_greeting(request.message):
-            return self._response(
-                session, "guidance", opening_message(), suggestions=OPENING_SUGGESTIONS,
-            )
         filters_before = session.filters.model_copy(deep=True)
         result_reference_was_current = (
             session.results_revision is not None
@@ -149,8 +160,9 @@ class ConversationService:
         )
         continuing_selected_availability = session.pending_vehicle_intent == "availability"
         extracted = self._fallback_extraction(request, session)
+        extract_started = perf_counter()
         if extracted is not None:
-            logger.info("Used deterministic fallback for a date or budget clarification")
+            logger.info("extract_ms=%.1f source=fallback", (perf_counter() - extract_started) * 1000)
         else:
             try:
                 titles = [card.title or f"Option {index}"
@@ -165,6 +177,7 @@ class ConversationService:
                     extracted = await self.extractor.extract(
                         request.message, session.filters, titles,
                     )
+                logger.info("extract_ms=%.1f source=llm", (perf_counter() - extract_started) * 1000)
             except (LLMUnavailable, ConfigurationError) as exc:
                 logger.warning(
                     "Requirement extraction unavailable; no deterministic fallback "
@@ -655,7 +668,7 @@ class ConversationService:
             "trip_budget": session.trip_budget,
             "last_assistant_action": session.last_assistant_action,
             "last_search_outcome": session.last_search_outcome,
-            "recent_user_turns": session.recent_turns[-4:],
+            "recent_user_turns": session.recent_turns[-2:],
         }
 
     def _fallback_extraction(self, request: ChatRequest, session: Session) -> Extraction | None:
@@ -749,7 +762,14 @@ class ConversationService:
                 "Please sign in so I can match that vehicle type or brand to Gear's verified catalog.",
             )
         try:
-            catalog = await self.gear.filter_catalog(token)
+            catalog_key = hashlib.sha256(token.encode()).hexdigest()
+            if session.catalog_cache is not None and session.catalog_cache_key == catalog_key:
+                catalog = session.catalog_cache
+            else:
+                catalog = await self.gear.filter_catalog(token)
+                if isinstance(catalog, dict):
+                    session.catalog_cache = catalog
+                    session.catalog_cache_key = catalog_key
         except GearAuthorizationRequired:
             session.pending_operation = PendingProtectedOperation(
                 "catalog_search", request_message=request_message,
@@ -800,11 +820,13 @@ class ConversationService:
             return self._authentication_required(
                 session, "Please sign in to search vehicles available for those dates.")
         had_prior_results = bool(session.results)
+        gear_started = perf_counter()
         try:
             if searches_availability:
                 cars = await self.gear.search_available_cars(filters, token)
             else:
                 cars = await self.gear.search_cars(filters, None)
+            logger.info("gear_ms=%.1f", (perf_counter() - gear_started) * 1000)
         except GearAuthorizationRequired:
             session.pending_operation = PendingProtectedOperation(
                 "search_availability", request_message=request_message,

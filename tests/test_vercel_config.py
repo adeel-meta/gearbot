@@ -27,7 +27,10 @@ def test_staging_rejects_debug(monkeypatch):
 def test_cors_origins_parsed(monkeypatch):
     monkeypatch.setenv("CORS_ALLOW_ORIGINS", "https://a.test, http://localhost:3000 ")
     settings = Settings.from_environment()
-    assert settings.cors_allow_origins == ("https://a.test", "http://localhost:3000")
+    assert "https://a.test" in settings.cors_allow_origins
+    assert "http://localhost:3000" in settings.cors_allow_origins
+    assert "https://gearapp.ae" in settings.cors_allow_origins
+    assert "https://www.gearapp.ae" in settings.cors_allow_origins
 
 
 def test_cors_origins_default_when_unset(monkeypatch):

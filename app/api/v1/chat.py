@@ -1,9 +1,12 @@
 """One chat endpoint shared by Gear Web and Mobile."""
 
+import logging
 from functools import lru_cache
+import json
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response
+from fastapi.responses import StreamingResponse
 
 from app.clients.demo import DemoExtractor, DemoGearClient
 from app.clients.gear import GearClient
@@ -16,6 +19,7 @@ from app.services.conversation import ConversationService, TurnConflict
 
 
 router = APIRouter(prefix="/api/v1/agent", tags=["agent"])
+logger = logging.getLogger("gear_ai.chat")
 
 
 @lru_cache(maxsize=1)
@@ -70,6 +74,25 @@ def bearer_token(authorization: str | None) -> str | None:
     return token
 
 
+def prepared_chat_request(
+    request: ChatRequest,
+    session_header: SessionToken | None,
+    session_cookie: SessionToken | None,
+    session_transport: str | None,
+) -> ChatRequest:
+    supplied_ids = {value for value in (request.session_id, session_header, session_cookie)
+                    if value is not None}
+    if len(supplied_ids) > 1:
+        raise HTTPException(status_code=400, detail="Conflicting AI session IDs")
+    if session_transport not in {None, "cookie"}:
+        raise HTTPException(status_code=400, detail="Unsupported AI session transport")
+    return request.model_copy(update={"session_id": next(iter(supplied_ids), None)})
+
+
+def _sse(event: str, payload: dict[str, object]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
 @router.post("/chat", response_model=ChatResponse, response_model_exclude_none=True)
 async def chat(
     request: ChatRequest,
@@ -80,14 +103,7 @@ async def chat(
     session_transport: Annotated[str | None, Header(alias="X-AI-Session-Transport")] = None,
     service: ConversationService = Depends(get_chat_service),
 ) -> ChatResponse:
-    supplied_ids = {value for value in (request.session_id, session_header, session_cookie)
-                    if value is not None}
-    if len(supplied_ids) > 1:
-        raise HTTPException(status_code=400, detail="Conflicting AI session IDs")
-    if session_transport not in {None, "cookie"}:
-        raise HTTPException(status_code=400, detail="Unsupported AI session transport")
-    session_id = next(iter(supplied_ids), None)
-    request = request.model_copy(update={"session_id": session_id})
+    request = prepared_chat_request(request, session_header, session_cookie, session_transport)
     token = bearer_token(authorization)
     try:
         result = await service.chat(request, token)
@@ -105,6 +121,42 @@ async def chat(
         )
         return result.model_copy(update={"session_id": None})
     return result
+
+
+@router.post("/chat/stream")
+async def chat_stream(
+    request: ChatRequest,
+    authorization: Annotated[str | None, Header()] = None,
+    session_header: Annotated[SessionToken | None, Header(alias="X-AI-Session-ID")] = None,
+    session_cookie: Annotated[SessionToken | None, Cookie(alias="ai_session_id")] = None,
+    session_transport: Annotated[str | None, Header(alias="X-AI-Session-Transport")] = None,
+    service: ConversationService = Depends(get_chat_service),
+) -> StreamingResponse:
+    request = prepared_chat_request(request, session_header, session_cookie, session_transport)
+    token = bearer_token(authorization)
+
+    async def events():
+        yield _sse("started", {"message": "Looking for cars…"})
+        try:
+            result = await service.chat(request, token)
+        except TurnConflict as exc:
+            yield _sse("error", {"detail": str(exc)})
+            return
+        except SessionStoreUnavailable:
+            yield _sse("error", {"detail": "Conversation is temporarily unavailable"})
+            return
+        except Exception:
+            logger.exception("chat stream failed")
+            yield _sse("error", {"detail": "The assistant could not complete that request."})
+            return
+        yield _sse("result", result.model_dump(mode="json", exclude_none=True))
+        yield _sse("done", {})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/session/reset", status_code=204)

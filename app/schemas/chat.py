@@ -3,6 +3,8 @@
 from datetime import date, time
 from typing import Annotated, Literal
 
+import re
+
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 
@@ -20,6 +22,19 @@ class ClientContext(BaseModel):
     car_type_id: ObjectIdText | None = None
     car_type_ids: list[ObjectIdText] | None = Field(default=None, min_length=1, max_length=20)
     brand_id: ObjectIdText | None = None
+    display_name: str | None = Field(default=None, max_length=40)
+
+    @field_validator("display_name")
+    @classmethod
+    def first_name_only(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        token = value.strip().split(" ", 1)[0]
+        if not token:
+            return None
+        if not re.fullmatch(r"[A-Za-z][A-Za-z'.-]{0,39}", token):
+            raise ValueError("display_name must be a first name")
+        return token
 
     @model_validator(mode="after")
     def coordinates_together(self) -> "ClientContext":

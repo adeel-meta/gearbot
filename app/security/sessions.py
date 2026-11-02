@@ -2,10 +2,10 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
 import hashlib
 import hmac
 import secrets
-from typing import Literal
 from uuid import UUID, uuid4
 
 from app.schemas.chat import ChatResponse, SearchFilters, VehicleCard
@@ -49,6 +49,8 @@ class Session:
     pending_operation: PendingProtectedOperation | None = None
     selected_vehicle_id: str | None = None
     pending_vehicle_intent: Literal["availability"] | None = None
+    catalog_cache: dict[str, Any] | None = None
+    catalog_cache_key: str | None = None
 
 
 class SessionStore:

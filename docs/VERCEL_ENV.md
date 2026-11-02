@@ -37,7 +37,8 @@ SESSION_TTL_SECONDS=1800
 # Add both for production or multi-instance staging:
 # UPSTASH_REDIS_REST_URL=https://your-db.upstash.io
 # UPSTASH_REDIS_REST_TOKEN=<writable REST token>
-CORS_ALLOW_ORIGINS=https://your-web-app.com,http://localhost:3000
+# Optional. Extra origins are merged with the built-in gearapp.ae and localhost defaults.
+# CORS_ALLOW_ORIGINS=https://gearapp.ae,https://www.gearapp.ae,http://localhost:5173
 ```
 
 `HOST` and `PORT` are optional on Vercel (the platform sets routing).
