@@ -991,9 +991,10 @@ class ConversationService:
         }
         try:
             has_resolved_date_range = (
-                date_question_pending
+                (date_question_pending
+                 or re.match(r"^\s*\d", request.message) is not None)
                 and resolve_month_day_range(
-                    request.message, self.today(), allow_bare=True,
+                    request.message, self.today(), allow_bare=date_question_pending,
                 ) is not None
             )
         except ValueError:
@@ -1152,6 +1153,7 @@ class ConversationService:
             return self._authentication_required(
                 session, "Please sign in to search vehicles available for those dates.")
         had_prior_results = bool(session.results)
+        enforce_type = bool(getattr(self.gear, "requires_result_type_validation", False))
         gear_started = perf_counter()
         listing_note = None
         try:
@@ -1161,6 +1163,7 @@ class ConversationService:
                 cars = await self.gear.search_cars(filters, None)
             cars, missing_attribute, listing_note = self._apply_verified_preferences(
                 cars, filters, apply_unforwarded=searches_availability,
+                enforce_type=enforce_type,
             )
             if (not searches_availability and filters.max_price is not None
                     and getattr(self.gear, "supports_public_price_fallback", False)):
@@ -1171,6 +1174,7 @@ class ConversationService:
                     listings = await self.gear.search_cars(unpriced, None)
                     cars, missing_attribute, listing_note = self._apply_verified_preferences(
                         listings, filters, apply_unforwarded=True,
+                        enforce_type=enforce_type,
                     )
                     cars = [car for car in cars if car.price is not None
                             and car.price <= filters.max_price
@@ -1196,6 +1200,7 @@ class ConversationService:
                 })
                 cars, missing_attribute, listing_note = self._apply_verified_preferences(
                     listings, narrowed, apply_unforwarded=True,
+                    enforce_type=enforce_type,
                 )
                 if cars and searches_availability:
                     listing_note = (
@@ -1275,6 +1280,7 @@ class ConversationService:
     @staticmethod
     def _apply_verified_preferences(
         cars: list[VehicleCard], filters: SearchFilters, *, apply_unforwarded: bool = False,
+        enforce_type: bool = False,
     ) -> tuple[list[VehicleCard], str | None, str | None]:
         filtered = list(cars)
         if filters.max_price is not None:
@@ -1313,7 +1319,7 @@ class ConversationService:
             elif filtered:
                 note = ("I couldn't match that wording on the listing titles, "
                         "so these are the closest cars for your other filters.")
-        if apply_unforwarded and filters.car_type_name:
+        if (apply_unforwarded or enforce_type) and filters.car_type_name:
             if filtered and not any(car.car_type_name for car in filtered):
                 return [], "vehicle type", None
             wanted_type = filters.car_type_name.casefold()

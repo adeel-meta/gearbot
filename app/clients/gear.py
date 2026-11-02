@@ -182,6 +182,7 @@ def vehicle_cards(payload: object) -> list[VehicleCard]:
 
 class GearClient:
     supports_public_price_fallback = True
+    requires_result_type_validation = True
 
     def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
         self.settings = settings
