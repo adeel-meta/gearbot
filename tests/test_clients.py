@@ -143,6 +143,28 @@ def test_gear_details_and_availability_forward_user_credential_and_explicit_data
     assert asyncio.run(client.check_availability(car_id, filters, "customer-token")) is False
 
 
+def test_date_only_availability_uses_available_cars_search():
+    car_id = "507f1f77bcf86cd799439011"
+
+    def handler(request):
+        assert request.method == "GET"
+        assert request.url.path.endswith("/getAvailableCars")
+        assert request.headers["Authorization"] == "Bearer customer-token"
+        assert request.url.params["from_date"] == "2026-11-07"
+        assert request.url.params["to_date"] == "2026-11-11"
+        assert "from_time" not in request.url.params
+        assert "to_time" not in request.url.params
+        return httpx.Response(200, json={"data": {"cars": [
+            {"_id": car_id, "title": "Available by day"},
+        ]}})
+
+    client = GearClient(settings(), httpx.MockTransport(handler))
+    filters = SearchFilters(from_date="2026-11-07", to_date="2026-11-11")
+    assert asyncio.run(client.check_availability(
+        car_id, filters, "customer-token",
+    )) is True
+
+
 @pytest.mark.parametrize(("payload", "expected"), [
     ({"status": True, "message": "Car is available"}, True),
     ({"status": False, "message": "Car is not available"}, False),

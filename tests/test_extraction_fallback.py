@@ -93,7 +93,13 @@ def test_pending_budget_answer_recovers_without_model():
     assert extractor.calls == 0
 
 
-def test_bare_date_follow_up_asks_for_month_when_model_is_unavailable():
+@pytest.mark.parametrize("message,today,start,end", [
+    ("7 to 11", date(2026, 11, 2), date(2026, 11, 7), date(2026, 11, 11)),
+    ("10 to 12", date(2026, 11, 15), date(2026, 12, 10), date(2026, 12, 12)),
+])
+def test_bare_date_follow_up_infers_upcoming_month_when_model_is_unavailable(
+    message, today, start, end,
+):
     sessions = SessionStore(1800)
     session = sessions.get_or_create(None)
     session.filters = SearchFilters(location="Dubai")
@@ -102,15 +108,38 @@ def test_bare_date_follow_up_asks_for_month_when_model_is_unavailable():
     extractor = FailingExtractor()
     chat = ConversationService(
         extractor, gear, sessions, data_source="demo",
-        today=lambda: date(2026, 10, 15),
+        today=lambda: today,
     )
 
     response = asyncio.run(chat.chat(ChatRequest(
-        message="18 to 20", session_id=session.public_token,
+        message=message, session_id=session.public_token,
+    ), None))
+
+    assert response.status == "results"
+    assert response.applied_filters.from_date == start
+    assert response.applied_filters.to_date == end
+    assert len(gear.calls) == 1
+    assert extractor.calls == 0
+
+
+def test_bare_range_that_crosses_months_gets_clarified():
+    sessions = SessionStore(1800)
+    session = sessions.get_or_create(None)
+    session.filters = SearchFilters(location="Dubai")
+    session.pending_requirement = "dates"
+    gear = FakeGear()
+    extractor = FailingExtractor()
+    chat = ConversationService(
+        extractor, gear, sessions, data_source="demo",
+        today=lambda: date(2026, 11, 2),
+    )
+
+    response = asyncio.run(chat.chat(ChatRequest(
+        message="29 to 2", session_id=session.public_token,
     ), None))
 
     assert response.status == "clarification"
-    assert "month and year" in response.message.lower()
+    assert "aren't a valid" in response.message.lower()
     assert gear.calls == []
     assert extractor.calls == 0
 

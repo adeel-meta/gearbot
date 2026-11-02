@@ -37,6 +37,7 @@ class Session:
     budget_decided: bool = False
     trip_budget: float | None = None
     location_source: Literal["typed", "shared"] | None = None
+    location_locked: bool = False
     field_provenance: dict[str, str] = field(default_factory=dict)
     last_assistant_action: str | None = None
     last_search_filters: SearchFilters | None = None

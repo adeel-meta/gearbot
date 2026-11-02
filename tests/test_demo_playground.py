@@ -9,7 +9,7 @@ from app.clients.demo import DemoExtractor, DemoGearClient
 from app.clients.llm import OpenAIRequirementExtractor
 from app.config import Settings
 from app.main import app
-from app.schemas.chat import ChatRequest
+from app.schemas.chat import ChatRequest, SearchFilters
 from app.security.sessions import SessionStore
 from app.services.conversation import ConversationService
 
@@ -49,6 +49,44 @@ def test_demo_conversation_refines_filters_and_uses_only_sample_inventory():
         assert "In this demo" in results[5].message
 
     asyncio.run(scenario())
+
+
+def test_demo_availability_completes_with_rental_days_only():
+    service = ConversationService(
+        DemoExtractor(), DemoGearClient(), SessionStore(1800),
+        data_source="demo", today=lambda: date(2026, 11, 2),
+    )
+
+    async def scenario():
+        first = await service.chat(ChatRequest(message="Cars in Dubai"), None)
+        dates = await service.chat(ChatRequest(
+            message="Check availability for option 1", session_id=first.session_id,
+        ), None)
+        available = await service.chat(ChatRequest(
+            message="7 to 11",
+            session_id=first.session_id,
+        ), None)
+
+        assert dates.status == "clarification"
+        assert "dates" in dates.message.lower()
+        assert available.status == "availability"
+        assert available.available is True
+        assert available.applied_filters.from_date == date(2026, 11, 7)
+        assert available.applied_filters.to_date == date(2026, 11, 11)
+        assert available.applied_filters.from_time is None
+        assert available.applied_filters.to_time is None
+        assert "rental days" in available.message.lower()
+        assert "book" not in available.message.lower()
+
+    asyncio.run(scenario())
+
+
+def test_demo_extractor_still_understands_optional_12_hour_times():
+    extracted = asyncio.run(DemoExtractor().extract(
+        "Check option 1 from 6pm to 12 am", SearchFilters(), ["Demo car"],
+    ))
+    assert extracted.from_time == "18:00"
+    assert extracted.to_time == "00:00"
 
 
 def test_demo_guardrail_blocks_unverified_filter_before_sample_search():

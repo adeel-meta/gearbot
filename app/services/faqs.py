@@ -12,7 +12,7 @@ SUPPORT_URL = "https://gearapp.ae/support"
 
 def faq_answer(message: str) -> tuple[str, list[str]] | None:
     lower = message.lower()
-    if re.search(r"\b(cancel|cancellation|refund|no[ -]?show)\b", lower):
+    if re.search(r"\b(cancel|cancell?ation|refund|no[ -]?show)\b", lower):
         return (
             "You can cancel from My Bookings in the Gear app. Fees, notice periods, and "
             "refund eligibility depend on the rental partner; cancellations within 24 hours "

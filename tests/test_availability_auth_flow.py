@@ -281,26 +281,30 @@ def test_single_relative_pickup_keeps_date_and_asks_only_for_return_date():
     assert gear.calls == []
 
 
-def test_understood_dates_prompt_only_for_missing_times():
+def test_selected_car_availability_uses_dates_without_requesting_times():
     gear = FakeGear([CARD])
     chat = ConversationService(FakeExtractor([
         extraction(location="Dubai"),
         extraction(intent="availability", selected_index=1, needs_dates=True),
+        extraction(from_date="2026-10-10", to_date="2026-10-12"),
     ]), gear, SessionStore(1800), today=TODAY)
 
     async def scenario():
-        first = await chat.chat(ChatRequest(message="Cars in Dubai"), None)
+        first = await chat.chat(ChatRequest(message="Cars in Dubai"), "valid-token")
         response = await chat.chat(ChatRequest(
             message="Is option 1 available from 10 to 12 of this month?",
             session_id=first.session_id,
-        ), None)
-        assert response.status == "clarification"
-        assert "times" in response.message.lower()
+        ), "valid-token")
+        assert response.status == "availability"
+        assert response.available is True
+        assert "rental days" in response.message.lower()
+        assert "times" not in response.message.lower()
         assert "what pickup and return dates" not in response.message.lower()
         assert "iso" not in response.message.lower()
         assert response.applied_filters.from_date == date(2026, 10, 10)
         assert response.applied_filters.to_date == date(2026, 10, 12)
-        assert len(gear.calls) == 1
+
+        assert gear.calls[-1] == ("availability", CARD.id, "valid-token")
 
     asyncio.run(scenario())
 
@@ -343,23 +347,19 @@ def test_selected_car_survives_details_auth_prompt_and_implicit_availability_req
         assert available.status == "availability"
         assert available.available is True
         assert available.vehicles[0].id == CARD.id
-        assert "book" in available.message.lower()
-        assert "gear app" in available.message.lower()
+        assert "rental days" in available.message.lower()
         assert available.action is None
         assert gear.calls[-1] == ("availability", CARD.id, "valid-token")
 
     asyncio.run(scenario())
 
 
-def test_bare_days_ask_for_month_then_named_month_resumes_same_option():
+def test_bare_days_are_enough_for_selected_car_date_availability():
     second_card = VehicleCard(id="507f1f77bcf86cd799439012", title="test monday car")
     gear = FakeGear([CARD, second_card])
     chat = ConversationService(FakeExtractor([
         extraction(location="Dubai"),
         extraction(intent="availability", selected_index=2, needs_dates=True),
-        extraction(from_date="11", to_date="15"),
-        extraction(from_date="11 October", to_date="15 October", max_price=30),
-        extraction(from_time="10:00", to_time="18:00"),
     ]), gear, SessionStore(1800), today=TODAY)
 
     async def scenario():
@@ -370,28 +370,20 @@ def test_bare_days_ask_for_month_then_named_month_resumes_same_option():
         month = await chat.chat(ChatRequest(
             message="11 TO 15", session_id=first.session_id,
         ), None)
-        times = await chat.chat(ChatRequest(
-            message="11 TO 15 OCTOBER AND PRICE RANGE IS 30 AED PERDAY",
-            session_id=first.session_id,
-        ), None)
         available = await chat.chat(ChatRequest(
-            message="10:00 to 18:00", session_id=first.session_id,
+            message="Continue", session_id=first.session_id,
         ), "valid-token")
 
         assert dates.status == "clarification"
         assert "pickup and return dates" in dates.message.lower()
-        assert month.status == "clarification"
-        assert "month and year" in month.message.lower()
-        assert month.applied_filters.from_date is None
-        assert times.status == "clarification"
-        assert "times" in times.message.lower()
-        assert times.applied_filters.from_date == date(2026, 10, 11)
-        assert times.applied_filters.to_date == date(2026, 10, 15)
-        assert times.applied_filters.max_price == 30
+        assert month.status == "authentication_required"
+        assert "sign in" in month.message.lower()
+        assert month.applied_filters.from_date == date(2026, 10, 11)
+        assert month.applied_filters.to_date == date(2026, 10, 15)
         assert available.status == "availability"
         assert available.available is True
         assert available.vehicles[0].id == second_card.id
-        assert "book" in available.message.lower()
+        assert "rental days" in available.message.lower()
         assert gear.calls[-1] == ("availability", second_card.id, "valid-token")
 
     asyncio.run(scenario())

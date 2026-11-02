@@ -46,8 +46,6 @@ def greeting_message(
         return f"{hello}. {budget_amount_prompt()}"
     if pending in {"dates", "availability_dates"}:
         return f"{hello}. {dates_prompt()}"
-    if pending == "availability_times":
-        return f"{hello}. What pickup and return times should I use?"
     if pending in {"location", "location_then_dates"}:
         return f"{hello}. {location_prompt(filters)}"
     if pending == "vehicle_type":
@@ -198,15 +196,18 @@ def no_results_message(filters: SearchFilters) -> str:
 
 def no_results_suggestions(filters: SearchFilters | None = None,
                            *, anywhere: bool = False,
-                           trip_budget: bool = False) -> list[str]:
+                           trip_budget: bool = False,
+                           location_locked: bool = False) -> list[str]:
     return no_results_actions(filters or SearchFilters(), anywhere=anywhere,
-                              trip_budget=trip_budget)
+                              trip_budget=trip_budget, location_locked=location_locked)
 
 
 def results_suggestions(filters: SearchFilters, *, has_single_result: bool = False) -> list[str]:
-    chips = ["Cheapest first", "Change dates",
-             "Change budget" if filters.max_price is not None else "Set budget",
-             "Different vehicle type"]
+    chips = ["Cheapest first"]
+    if filters.from_date and filters.to_date:
+        chips.append("Change dates")
+    chips.append("Change budget" if filters.max_price is not None else "Set budget")
+    chips.append("Different vehicle type")
     if has_single_result:
         return ["Check availability", "Price details", "Different vehicle type", "Booking help"]
     if filters.sort_by == "price_low":

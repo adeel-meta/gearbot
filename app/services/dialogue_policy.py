@@ -11,15 +11,135 @@ from app.schemas.chat import SearchFilters
 
 Question = Literal["location", "dates", "budget", "budget_period", "vehicle_type"]
 ContextField = Literal["location", "dates", "budget", "vehicle_type", "summary", "reason"]
+TurnAction = Literal[
+    "supply", "revise", "recall", "policy", "booking", "result", "reset", "unclear", "search",
+]
+TurnTarget = Literal["location", "dates", "budget", "vehicle_type", "booking", "results"]
+
+_PLACE_ALIASES = {
+    "duabi": "Dubai",
+    "dubia": "Dubai",
+    "dubaii": "Dubai",
+    "dubai": "Dubai",
+    "sharja": "Sharjah",
+    "sharjah": "Sharjah",
+    "abu dabi": "Abu Dhabi",
+    "abu dhabi": "Abu Dhabi",
+    "ajman": "Ajman",
+}
+_LEADING_PLACE = re.compile(r"^(?:in|at|near|around)\s+", re.IGNORECASE)
+_CHANGE_VERB = re.compile(r"\b(?:change|update|switch|edit|replace|correct)\b")
+_LOCATION_FIELD = re.compile(r"\b(?:location|area|city|place)\b")
+_DATE_FIELD = re.compile(r"\b(?:dates?|schedule)\b")
+_BUDGET_FIELD = re.compile(r"\b(?:budget|price limit|spending limit)\b")
+_TYPE_FIELD = re.compile(r"\b(?:vehicle type|body type|car type)\b")
+_KNOWN_TYPE = re.compile(
+    r"\b(?:suv|sedan|hatchback|coupe|convertible|van|pickup|truck)s?\b",
+)
+_REPLACEMENT_PLACE = re.compile(
+    r"\b(?:to|as)\s+([A-Za-z][A-Za-z '\-]{1,40})\s*$",
+)
+_ONE_AMOUNT = re.compile(r"\b(\d[\d,]*(?:\.\d+)?)\b")
+_MONEY_CONTEXT = re.compile(
+    r"\b(?:aed|budget|per\s*day|daily|/\s*day|like|around|about)\b",
+    re.IGNORECASE,
+)
+
+
+def normalize_place(text: str) -> str:
+    """Store a place without a leading preposition, using a known city spelling."""
+    value = _LEADING_PLACE.sub("", " ".join(text.strip().split()))
+    alias = _PLACE_ALIASES.get(value.casefold())
+    return alias if alias is not None else value.strip(" .")
+
+
+def place_matches(wanted: str, card_location: str) -> bool:
+    """Match a saved city to a Gear label such as 'Dubai - AE'."""
+    wanted_key = normalize_place(wanted).casefold()
+    card = card_location.casefold()
+    city = re.split(r"\s+-\s+", card, maxsplit=1)[0].strip()
+    return wanted_key == city or wanted_key in card
+
+
+def stated_budget_amount(message: str) -> float | None:
+    """Read one amount from a budget reply such as 'like 250 per day'."""
+    if _MONEY_CONTEXT.search(message) is None:
+        return None
+    numbers = _ONE_AMOUNT.findall(message)
+    if len(numbers) != 1:
+        return None
+    try:
+        return float(numbers[0].replace(",", ""))
+    except ValueError:
+        return None
+
+
+def classify_turn(message: str) -> tuple[TurnAction, TurnTarget | None] | None:
+    """Decide a turn when its structure is clear. Paraphrases stay with the extractor."""
+    value = normalized(message)
+    if value in {"change it", "change something", "something else", "change requirements"}:
+        return "unclear", None
+    if value in {"start over", "clear everything", "clear filters", "reset"}:
+        return "reset", None
+    if re.search(r"\b(?:book this|my booking|where is my booking)\b", value):
+        return "booking", "booking"
+    if re.search(r"\bpolicy\b", value) and re.search(
+        r"\b(?:cancel|cancell?ation|refund|document|deposit|fee|support)\b", value,
+    ):
+        return "policy", None
+    if _KNOWN_TYPE.search(value) and re.search(r"\b(?:make it|switch to|change to)\b", value):
+        return "revise", "vehicle_type"
+    fields: list[TurnTarget] = []
+    if _LOCATION_FIELD.search(value):
+        fields.append("location")
+    if _DATE_FIELD.search(value):
+        fields.append("dates")
+    if _BUDGET_FIELD.search(value):
+        fields.append("budget")
+    if _TYPE_FIELD.search(value):
+        fields.append("vehicle_type")
+    wants_change = _CHANGE_VERB.search(value) is not None
+    if not wants_change or not fields:
+        return None
+    if len(fields) != 1:
+        return "unclear", None
+    return "revise", fields[0]
+
+
+def revision_place(message: str) -> str | None:
+    match = _REPLACEMENT_PLACE.search(message.strip())
+    if match is None:
+        return None
+    place = normalize_place(match.group(1))
+    if _CHANGE_VERB.search(place) or _LOCATION_FIELD.search(place) or _DATE_FIELD.search(place):
+        return None
+    return place
+
+
+def revision_vehicle_type(message: str) -> str | None:
+    match = _KNOWN_TYPE.search(message)
+    if match is None:
+        return None
+    name = match.group(0).casefold().rstrip("s")
+    if name == "suv":
+        return "SUV"
+    return name.title()
 
 
 def normalized(message: str) -> str:
     return " ".join(message.casefold().strip(" \t\n.!?").split())
 
 
+def near_me_request(message: str) -> bool:
+    return normalized(message) in {
+        "cars near me", "show cars near me", "show me cars near me",
+    }
+
+
 def starts_guided_search(message: str) -> bool:
     value = normalized(message)
     return (value in {"family trip", "budget cars", "cars near me"}
+            or near_me_request(message)
             or value == "find a car" or value.startswith(("find a car ", "i need a car ")))
 
 
@@ -42,9 +162,17 @@ def skips_budget(message: str) -> bool:
 
 def context_question(message: str) -> ContextField | None:
     value = normalized(message)
+    value = re.sub(r"\bwat\b", "what", value)
+    value = re.sub(r"\bwhre\b", "where", value)
+    value = re.sub(r"\bwhyy\b", "why", value)
+    value = re.sub(r"^(?:yes|yeah|yep|ok|okay)[, ]+", "", value)
+    value = re.sub(r"\bu\b", "you", value)
     if not (value.startswith(("what ", "which ", "where ", "why ", "did i ",
-                              "have i ", "do you ", "are you "))):
+                              "have i ", "do you ", "are you "))
+            or value in {"why dates", "why area", "why location", "why budget"}):
         return None
+    if value.startswith("why "):
+        return "reason"
     if re.search(r"\b(?:area|location|city|place)\b", value):
         return "location"
     if value.startswith(("did i say ", "did i mention ", "have i said ")):
@@ -61,8 +189,6 @@ def context_question(message: str) -> ContextField | None:
         return "vehicle_type"
     if re.search(r"\b(?:searching|looking|filters|requirements)\b", value):
         return "summary"
-    if value.startswith("why "):
-        return "reason"
     return None
 
 
@@ -100,14 +226,14 @@ def corrected_location(message: str) -> str | None:
 def cancels_pending_change(message: str) -> bool:
     return normalized(message) in {
         "cancel that change", "cancel this change", "never mind", "nevermind",
-        "keep the old one", "leave it as it was",
+        "keep the old one", "leave it as it was", "cancelation", "cancellation",
     }
 
 
 def next_question(mode: str, filters: SearchFilters, *, anywhere: bool,
-                  budget_decided: bool) -> Question | None:
+                  budget_decided: bool, location_locked: bool = False) -> Question | None:
     """Application rules decide readiness; extractor hints cannot waive a requirement."""
-    if not (filters.location or filters.lat is not None or anywhere):
+    if not location_locked and not (filters.location or filters.lat is not None or anywhere):
         return "location"
     if mode == "guided":
         if not (filters.from_date and filters.to_date):
@@ -118,7 +244,7 @@ def next_question(mode: str, filters: SearchFilters, *, anywhere: bool,
 
 
 def no_results_actions(filters: SearchFilters, *, anywhere: bool,
-                       trip_budget: bool = False) -> list[str]:
+                       trip_budget: bool = False, location_locked: bool = False) -> list[str]:
     actions: list[str] = []
     if filters.max_price is not None:
         actions.append("Increase budget")
@@ -128,7 +254,7 @@ def no_results_actions(filters: SearchFilters, *, anywhere: bool,
         actions.append("Set budget")
     if filters.location or filters.lat is not None:
         actions.append("Change area")
-    elif not anywhere:
+    elif not anywhere and not location_locked:
         actions.append("Choose area")
     if filters.car_type_id or filters.car_type_name or filters.search:
         actions.append("Different vehicle type")

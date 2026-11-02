@@ -137,6 +137,17 @@ def test_cars_near_me_suggestion_uses_shared_coordinates_or_asks_for_area():
     asyncio.run(scenario())
 
 
+def test_show_cars_near_me_phrasing_asks_for_area_without_crashing():
+    chat = ConversationService(FakeExtractor([]), FakeGear(), SessionStore(1800))
+
+    async def scenario():
+        response = await chat.chat(ChatRequest(message="show cars near me"), None)
+        assert response.status == "clarification"
+        assert "location" in response.message.lower()
+
+    asyncio.run(scenario())
+
+
 def test_date_based_availability_post_filters_location_from_verified_cards():
     dubai = VehicleCard(id="507f1f77bcf86cd799439031", title="Dubai car", location="Dubai")
     sharjah = VehicleCard(id="507f1f77bcf86cd799439032", title="Sharjah car", location="Sharjah")
@@ -190,6 +201,17 @@ def test_official_faq_answers_do_not_require_the_model_or_login():
     response = asyncio.run(chat.chat(ChatRequest(message="What is the cancellation policy?"), None))
     assert response.status == "guidance"
     assert "rental partner" in response.message.lower()
+    assert "gearapp.ae/cancellation-policy" in response.message
+
+
+def test_cancellation_faq_accepts_common_single_l_spelling():
+    chat = ConversationService(FakeExtractor([]), FakeGear(), SessionStore(1800))
+
+    response = asyncio.run(chat.chat(
+        ChatRequest(message="What is cancelation policy?"), None,
+    ))
+
+    assert response.status == "guidance"
     assert "gearapp.ae/cancellation-policy" in response.message
 
 

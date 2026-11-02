@@ -5,6 +5,7 @@ import re
 from app.clients.gear import GearUnavailable
 from app.clients.llm import Extraction
 from app.schemas.chat import SearchFilters, VehicleCard
+from app.services.dialogue_policy import place_matches
 
 
 # Every title is marked as a sample so a screenshot cannot be mistaken for live stock.
@@ -21,6 +22,28 @@ SAMPLE_CARS = (
                 location="Sharjah", price=210, rating=4.5, is_featured=False),
 )
 
+_TIME_TOKEN = re.compile(
+    r"(?<!\d)(?P<hour12>1[0-2]|0?[1-9])(?::(?P<minute12>[0-5]\d))?\s*"
+    r"(?P<meridiem>a\.?m\.?|p\.?m\.?)(?![a-z])"
+    r"|(?<!\d)(?P<hour24>(?:[01]\d|2[0-3])):(?P<minute24>[0-5]\d)(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def _time_values(message: str) -> list[str]:
+    values = []
+    for match in _TIME_TOKEN.finditer(message):
+        if match.group("meridiem"):
+            hour = int(match.group("hour12")) % 12
+            if match.group("meridiem").casefold().startswith("p"):
+                hour += 12
+            minute = int(match.group("minute12") or 0)
+        else:
+            hour = int(match.group("hour24"))
+            minute = int(match.group("minute24"))
+        values.append(f"{hour:02d}:{minute:02d}")
+    return values
+
 
 class DemoGearClient:
     """Implements only the read methods used by the chat flow."""
@@ -33,8 +56,8 @@ class DemoGearClient:
             raise GearUnavailable("Sample catalog has no distance or creation timestamps")
         cars = list(SAMPLE_CARS)
         if filters.location:
-            location = filters.location.casefold()
-            cars = [car for car in cars if location in (car.location or "").casefold()]
+            cars = [car for car in cars
+                    if car.location and place_matches(filters.location, car.location)]
         if filters.search:
             term = filters.search.casefold()
             if term in {"family car", "family"}:
@@ -62,8 +85,8 @@ class DemoGearClient:
     async def check_availability(self, car_id: str, filters: SearchFilters,
                                  token: str | None) -> bool:
         self._card(car_id)
-        if not all((filters.from_date, filters.to_date, filters.from_time, filters.to_time)):
-            raise GearUnavailable("Complete dates and times required")
+        if not all((filters.from_date, filters.to_date)):
+            raise GearUnavailable("Rental dates required")
         return car_id != "000000000000000000000003"
 
     @staticmethod
@@ -92,7 +115,7 @@ class DemoExtractor:
             selected_index = None
 
         dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", message)
-        times = re.findall(r"\b(?:[01]\d|2[0-3]):[0-5]\d\b", message)
+        times = _time_values(message)
         # SearchFilters validates calendar dates after extraction.
         valid_dates = dates[:2]
 

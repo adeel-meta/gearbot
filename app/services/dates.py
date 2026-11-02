@@ -61,8 +61,10 @@ def gear_today() -> date:
     return datetime.now(GEAR_TIMEZONE).date()
 
 
-def resolve_month_day_range(message: str, today: date) -> tuple[date, date | None] | None:
-    """Resolve explicit day ranges or a pickup day without making up a year."""
+def resolve_month_day_range(
+    message: str, today: date, *, allow_bare: bool = False,
+) -> tuple[date, date | None] | None:
+    """Resolve explicit ranges, and optionally bare day ranges in date context."""
     match = MONTH_DAY_RANGE.search(message)
     named_match = (NAMED_MONTH_RANGE.search(message) or MONTH_FIRST_RANGE.search(message)
                    if match is None else None)
@@ -81,7 +83,21 @@ def resolve_month_day_range(message: str, today: date) -> tuple[date, date | Non
     if pickup_only:
         match = MONTH_PICKUP_DAY.search(message)
     if match is None:
-        return None
+        if not allow_bare:
+            return None
+        match = BARE_DAY_RANGE.search(message)
+        if match is None:
+            return None
+        start_day, end_day = int(match.group("start")), int(match.group("end"))
+        month_index = today.year * 12 + today.month - 1
+        if start_day < today.day:
+            month_index += 1
+        year, zero_based_month = divmod(month_index, 12)
+        start = date(year, zero_based_month + 1, start_day)
+        end = date(year, zero_based_month + 1, end_day)
+        if end < start:
+            raise ValueError("Return day must be on or after pickup day")
+        return start, end
     month_index = today.year * 12 + today.month - 1
     if match.group("month").lower() == "next":
         month_index += 1

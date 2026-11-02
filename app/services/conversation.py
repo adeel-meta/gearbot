@@ -35,16 +35,23 @@ from app.services.dates import gear_today, has_bare_day_range, resolve_month_day
 from app.services.dialogue_policy import (
     cancels_pending_change,
     change_request,
+    classify_turn,
     clear_request,
     context_question,
     corrected_location,
     dates_description,
     explicit_anywhere,
+    near_me_request,
     next_question,
+    normalize_place,
     normalized,
+    place_matches,
+    revision_place,
+    revision_vehicle_type,
     skips_budget,
     starts_browsing,
     starts_guided_search,
+    stated_budget_amount,
 )
 from app.services.faqs import faq_answer
 from app.services.messaging import (
@@ -161,7 +168,8 @@ class ConversationService:
         if local_response := await self._handle_local_turn(session, request, token):
             return local_response
         if faq := faq_answer(request.message):
-            return self._response(session, "guidance", faq[0], suggestions=faq[1])
+            if not self._is_pending_task_reply(session, request.message):
+                return self._response(session, "guidance", faq[0], suggestions=faq[1])
         filters_before = session.filters.model_copy(deep=True)
         result_reference_was_current = (
             session.results_revision is not None
@@ -202,6 +210,8 @@ class ConversationService:
         # introduce that extra requirement.
         if extracted.needs_dates and not DATE_REQUEST.search(request.message):
             extracted = extracted.model_copy(update={"needs_dates": False})
+        if model_reply := await self._model_decision(session, request, extracted, token):
+            return model_reply
 
         spec_topic = vehicle_spec_topic(request.message)
         if extracted.intent not in {"details", "availability", "pricing"} and (
@@ -223,7 +233,9 @@ class ConversationService:
             return await self._vehicle_spec_answer(session, topic, card, token)
 
         if extracted.intent == "context_question":
-            return self._context_answer(session, extracted.question_field or "summary")
+            return self._context_answer(
+                session, extracted.question_field or "summary", request.message,
+            )
         if extracted.intent == "unsupported":
             return self._response(session, "guidance",
                                   "I can help you find a rental and explain how booking works.")
@@ -306,6 +318,7 @@ class ConversationService:
             question = next_question(
                 session.search_mode, filters, anywhere=session.anywhere,
                 budget_decided=session.budget_decided,
+                location_locked=session.location_locked,
             )
             if question == "location":
                 session.pending_requirement = "location"
@@ -339,16 +352,22 @@ class ConversationService:
         needs_dates = (
             extracted.needs_dates or (filters.rental_days is not None and filters.from_date is None)
         ) and not (filters.from_date and filters.to_date)
-        if extracted.needs_location and request.context.lat is None:
+        if extracted.needs_location and not session.location_locked and request.context.lat is None:
             session.pending_requirement = ("location_then_dates" if needs_dates
                                            else "location")
             prompt = near_me_prompt() if extracted.sort_by == "distance" else location_prompt()
             return self._response(session, "clarification", prompt)
+        if session.location_locked:
+            extracted = extracted.model_copy(update={"needs_location": False})
         if session.pending_requirement in {"location", "location_then_dates"}:
-            if not (filters.location or filters.lat is not None):
+            if filters.location or filters.lat is not None:
+                self._lock_known_location(session)
+                session.pending_requirement = ("dates" if session.pending_requirement == "location_then_dates"
+                                               or needs_dates else None)
+            elif not session.location_locked:
                 return self._response(session, "clarification", location_prompt())
-            session.pending_requirement = ("dates" if session.pending_requirement == "location_then_dates"
-                                           or needs_dates else None)
+            else:
+                session.pending_requirement = None
         if needs_dates or session.pending_requirement == "dates":
             if filters.from_date and filters.to_date:
                 session.pending_requirement = None
@@ -366,7 +385,7 @@ class ConversationService:
                     session, "clarification",
                     prompt,
                 )
-        if filters.sort_by == "distance" and filters.lat is None:
+        if filters.sort_by == "distance" and filters.lat is None and not session.location_locked:
             return self._response(session, "clarification", near_me_prompt())
         if (filters.from_date is None) != (filters.to_date is None):
             return self._response(
@@ -376,7 +395,7 @@ class ConversationService:
                     return_only=filters.to_date is None,
                 ),
             )
-        if (session.search_mode == "guided"
+        if (session.search_mode == "guided" and not session.location_locked
                 and not (filters.location or filters.lat is not None or session.anywhere)):
             session.pending_requirement = "location"
             return self._response(session, "clarification", location_prompt(filters))
@@ -389,19 +408,184 @@ class ConversationService:
         if not filters.query_params():
             if any((filters.family_suitable, filters.seats, filters.fuel_type,
                     filters.fuel_efficiency_preferred, filters.transmission)):
+                if session.location_locked:
+                    return await self._search_vehicles(
+                        session, token, request_message=request.message, budget_ack=budget_ack,
+                        catalog_skipped=catalog_skipped,
+                    )
                 session.pending_requirement = "location"
                 return self._response(session, "clarification", location_prompt())
             return self._response(session, "clarification", empty_search_prompt())
+        self._lock_known_location(session)
         return await self._search_vehicles(session, token, request_message=request.message,
                                            budget_ack=budget_ack,
                                            catalog_skipped=catalog_skipped)
+
+    async def _model_decision(self, session: Session, request: ChatRequest,
+                             extracted: Extraction, token: str | None) -> ChatResponse | None:
+        action = extracted.action
+        target = extracted.target
+        if action == "revise" and target in {"location", "dates", "budget", "vehicle_type"}:
+            if not self._revision_has_value(request.message, extracted, target):
+                return self._ask_revision(session, target)
+            return None
+        if action == "recall":
+            field = extracted.question_field or (
+                target if target in {"location", "dates", "budget", "vehicle_type"} else "summary"
+            )
+            return self._context_answer(session, field, request.message)
+        if action == "unclear":
+            return self._unclear_change(session)
+        if action == "policy":
+            return self._policy_reply(session, request.message)
+        if action == "booking":
+            return self._booking_reply(session)
+        if action == "reset":
+            return await self._reset_search(session, token)
+        return None
+
+    @staticmethod
+    def _revision_has_value(message: str, extracted: Extraction, target: str) -> bool:
+        if target == "location":
+            return bool(extracted.location) or revision_place(message) is not None
+        if target == "dates":
+            return bool(extracted.from_date or extracted.to_date)
+        if target == "budget":
+            return extracted.max_price is not None or extracted.min_price is not None
+        return bool(extracted.car_type_name) or revision_vehicle_type(message) is not None
+
+    async def _apply_local_decision(
+        self, session: Session, message: str, token: str | None,
+    ) -> ChatResponse | None:
+        classified = classify_turn(message)
+        if classified is None:
+            return None
+        action, target = classified
+        if action == "revise" and target is not None:
+            if target == "location" and (place := revision_place(message)):
+                return await self._replace_location(session, place, token)
+            if target == "vehicle_type" and (kind := revision_vehicle_type(message)):
+                return await self._replace_vehicle_type(session, kind, token)
+            if target == "dates":
+                try:
+                    found = resolve_month_day_range(message, self.today())
+                except ValueError:
+                    found = None
+                if found is not None and found[1] is not None:
+                    session.filters = session.filters.model_copy(update={
+                        "from_date": found[0], "to_date": found[1],
+                    })
+                    session.pending_requirement = None
+                    session.criteria_revision += 1
+                    return await self._continue_search(session, token)
+            if target == "budget" and (
+                budget_amount(message) is not None or stated_budget_amount(message) is not None
+            ):
+                return None
+            return self._ask_revision(session, target)
+        if action == "unclear":
+            return self._unclear_change(session)
+        if action == "policy":
+            return self._policy_reply(session, message)
+        if action == "booking":
+            return self._booking_reply(session)
+        if action == "reset":
+            return await self._reset_search(session, token)
+        return None
+
+    def _ask_revision(self, session: Session, target: str) -> ChatResponse:
+        if target == "budget":
+            session.pending_budget = True
+            session.pending_requirement = None
+            return self._response(session, "clarification", budget_amount_prompt())
+        if target == "dates":
+            session.pending_requirement = "dates"
+            return self._response(session, "clarification", dates_prompt(today=self.today()))
+        if target == "location":
+            session.location_locked = False
+            session.pending_requirement = "location"
+            return self._response(
+                session, "clarification", "Which city or area should I try?",
+            )
+        session.pending_requirement = "vehicle_type"
+        return self._response(
+            session, "clarification",
+            "What vehicle type would you like? You can also say 'Any vehicle type'.",
+            suggestions=["Any vehicle type"],
+        )
+
+    def _unclear_change(self, session: Session) -> ChatResponse:
+        return self._response(
+            session, "guidance",
+            "Which detail should I change: area, dates, budget, or vehicle type?",
+            suggestions=["Change area", "Change dates", "Change budget",
+                         "Different vehicle type"],
+        )
+
+    def _policy_reply(self, session: Session, message: str) -> ChatResponse:
+        faq = faq_answer(message)
+        if faq is None:
+            return self._response(
+                session, "guidance",
+                "I can explain Gear's public cancellation, document, and payment policies.",
+            )
+        return self._response(session, "guidance", faq[0], suggestions=faq[1])
+
+    def _booking_reply(self, session: Session) -> ChatResponse:
+        return self._response(
+            session, "guidance", booking_guidance_message(),
+            suggestions=booking_guidance_suggestions(),
+            action=ChatAction(type="SIGN_IN"),
+        )
+
+    async def _replace_location(self, session: Session, place: str,
+                                token: str | None) -> ChatResponse:
+        session.filters = session.filters.model_copy(update={
+            "location": place, "lat": None, "lng": None,
+        })
+        session.anywhere = False
+        session.location_source = "typed"
+        session.location_locked = True
+        session.pending_requirement = None
+        session.field_provenance["location"] = "typed"
+        session.criteria_revision += 1
+        return await self._continue_search(session, token)
+
+    async def _replace_vehicle_type(self, session: Session, kind: str,
+                                    token: str | None) -> ChatResponse:
+        session.filters = session.filters.model_copy(update={
+            "car_type_name": kind, "car_type_id": None, "car_type_ids": None, "search": None,
+        })
+        session.pending_requirement = None
+        session.criteria_revision += 1
+        return await self._continue_search(session, token)
+
+    async def _reset_search(self, session: Session, token: str | None) -> ChatResponse:
+        session.filters = SearchFilters()
+        session.pending_requirement = None
+        session.pending_budget = False
+        session.search_mode = "guided"
+        session.anywhere = False
+        session.budget_decided = False
+        session.trip_budget = None
+        session.location_source = None
+        session.location_locked = False
+        session.field_provenance.clear()
+        session.pending_operation = None
+        session.selected_vehicle_id = None
+        session.pending_vehicle_intent = None
+        session.results = []
+        session.criteria_revision += 1
+        return await self._continue_search(session, token)
 
     async def _handle_local_turn(
         self, session: Session, request: ChatRequest, token: str | None,
     ) -> ChatResponse | None:
         message = request.message
+        if handled := await self._apply_local_decision(session, message, token):
+            return handled
         if field := context_question(message):
-            return self._context_answer(session, field)
+            return self._context_answer(session, field, message)
         if cancels_pending_change(message):
             session.pending_budget = False
             if session.pending_requirement in {
@@ -427,7 +611,7 @@ class ConversationService:
                 })
                 session.criteria_revision += 1
                 return await self._continue_search(session, token)
-            if normalized(message) == "cars near me":
+            if near_me_request(message):
                 if request.context.lat is None:
                     session.pending_requirement = "location"
                     return self._response(session, "clarification", near_me_prompt())
@@ -437,6 +621,7 @@ class ConversationService:
                     "lng": request.context.lng,
                 })
                 session.location_source = "shared"
+                session.location_locked = True
                 session.field_provenance["location"] = "shared"
                 session.anywhere = False
                 session.criteria_revision += 1
@@ -465,6 +650,7 @@ class ConversationService:
                 return await self._continue_search(session, token)
         if explicit_anywhere(message):
             session.anywhere = True
+            session.location_locked = True
             session.location_source = None
             session.filters = session.filters.model_copy(update={
                 "location": None, "lat": None, "lng": None,
@@ -492,9 +678,13 @@ class ConversationService:
             session.filters.location is not None
             or session.pending_requirement in {"location", "location_then_dates"}
         ):
-            session.filters = session.filters.model_copy(update={"location": new_area})
+            session.location_locked = False
+            session.filters = session.filters.model_copy(update={
+                "location": normalize_place(new_area),
+            })
             session.anywhere = False
             session.location_source = "typed"
+            session.location_locked = True
             session.field_provenance["location"] = "typed"
             session.criteria_revision += 1
             return await self._continue_search(session, token)
@@ -508,6 +698,7 @@ class ConversationService:
                     session, "clarification", dates_prompt(today=self.today()),
                 )
             if action == "location":
+                session.location_locked = False
                 session.pending_requirement = "location"
                 return self._response(
                     session, "clarification", "Which city or area should I try?",
@@ -587,7 +778,7 @@ class ConversationService:
     async def _continue_search(self, session: Session, token: str | None) -> ChatResponse:
         question = next_question(
             session.search_mode, session.filters, anywhere=session.anywhere,
-            budget_decided=session.budget_decided,
+            budget_decided=session.budget_decided, location_locked=session.location_locked,
         )
         if question == "location":
             session.pending_requirement = "location"
@@ -630,7 +821,8 @@ class ConversationService:
             return catalog_error
         return await self._search_vehicles(session, token)
 
-    def _context_answer(self, session: Session, field: str) -> ChatResponse:
+    def _context_answer(self, session: Session, field: str,
+                        question: str = "") -> ChatResponse:
         filters = session.filters
         if field == "location":
             if filters.location:
@@ -645,7 +837,8 @@ class ConversationService:
                 reply = "You haven't specified an area yet."
                 if known_dates := dates_description(filters):
                     reply += f" I have your dates as {known_dates}."
-                reply += " Which city or area would you like?"
+                if not session.location_locked:
+                    reply += " Which city or area would you like?"
         elif field == "dates":
             dates = dates_description(filters)
             reply = (f"Your rental dates are {dates}." if dates else
@@ -666,7 +859,14 @@ class ConversationService:
             reply = (f"Your current vehicle preference is {requested_type}." if requested_type
                      else "You haven't specified a vehicle type.")
         elif field == "reason":
-            if session.pending_budget:
+            question_lower = question.casefold()
+            if re.search(r"\b(?:location|area|city|place|near me)\b", question_lower):
+                reply = "I use your location to find cars in the area you want. You can say 'anywhere' if you don't want to choose an area."
+            elif re.search(r"\b(?:date|dates|when|pickup|return|day|weekend)\b", question_lower):
+                reply = "I need your pickup and return dates to check which cars are available for your rental period."
+            elif re.search(r"\b(?:budget|price|cost)\b", question_lower):
+                reply = "A budget helps me narrow the results to cars in your price range. You can also skip it."
+            elif session.pending_budget:
                 reply = "I'm asking about your budget so I can narrow the cars by a price you choose. You can skip it."
             elif session.pending_requirement in {"location", "location_then_dates"}:
                 reply = "I'm asking for an area so I can search the right place."
@@ -681,7 +881,38 @@ class ConversationService:
             reply = summary if filters.query_params() else "You haven't given me search details yet."
             if session.last_search_outcome == "empty":
                 reply += " The last completed search found no verified matches."
+        follow_up = self._pending_follow_up(session)
+        if follow_up and field != "summary":
+            reply = f"{reply} {follow_up}"
         return self._response(session, "guidance", reply)
+
+    @staticmethod
+    def _lock_known_location(session: Session) -> None:
+        if session.anywhere or session.filters.location or session.filters.lat is not None:
+            session.location_locked = True
+
+    def _pending_follow_up(self, session: Session) -> str | None:
+        if session.pending_budget:
+            return budget_amount_prompt()
+        if session.pending_requirement in {"dates", "availability_dates"}:
+            return dates_prompt(today=self.today())
+        if session.pending_requirement in {"location", "location_then_dates"} and not session.location_locked:
+            return location_prompt(session.filters)
+        return None
+
+    def _is_pending_task_reply(self, session: Session, message: str) -> bool:
+        if not (session.pending_requirement or session.pending_budget):
+            return False
+        if cancels_pending_change(message) or change_request(message) or context_question(message):
+            return True
+        if budget_amount(message, allow_bare=session.pending_budget) is not None:
+            return True
+        try:
+            if resolve_month_day_range(message, self.today()) is not None:
+                return True
+        except ValueError:
+            return True
+        return has_bare_day_range(message)
 
     @staticmethod
     def _extraction_context(session: Session) -> dict[str, object]:
@@ -700,16 +931,18 @@ class ConversationService:
     def _fallback_extraction(self, request: ChatRequest, session: Session) -> Extraction | None:
         """Handle clear date and budget clarifications without waiting for the model."""
         date_question_pending = session.pending_requirement in {
-            "dates", "location", "location_then_dates",
+            "dates", "availability_dates", "location", "location_then_dates",
         }
         try:
-            has_named_date_range = (
+            has_resolved_date_range = (
                 date_question_pending
-                and resolve_month_day_range(request.message, self.today()) is not None
+                and resolve_month_day_range(
+                    request.message, self.today(), allow_bare=True,
+                ) is not None
             )
         except ValueError:
             # Let _merge_extracted_filters return its normal invalid-date clarification.
-            has_named_date_range = date_question_pending
+            has_resolved_date_range = date_question_pending
         pending_bare_date = (
             has_bare_day_range(request.message)
             and date_question_pending
@@ -717,15 +950,23 @@ class ConversationService:
         plain_location = (
             session.pending_requirement in {"location", "location_then_dates"}
             and re.fullmatch(r"[A-Za-z][A-Za-z '\-]{1,80}", request.message) is not None
-            and not has_named_date_range
+            and normalized(request.message) not in {
+                "not sure", "i'm not sure", "im not sure", "i am not sure",
+                "i don't know", "i dont know", "dont know", "don't know",
+            }
+            and not has_resolved_date_range
             and not pending_bare_date
         )
         if not (
-            has_named_date_range
+            has_resolved_date_range
             or pending_bare_date
             or plain_location
             or session.pending_budget
             or budget_change_requested(request.message)
+            or (
+                (session.pending_budget or session.budget_decided)
+                and stated_budget_amount(request.message) is not None
+            )
         ):
             return None
         # This local parser cannot safely extract extra specifications or pickup times.
@@ -741,9 +982,18 @@ class ConversationService:
         ) if name.casefold() in request.message.casefold()), None)
         if plain_location and location is None:
             location = request.message.strip()
+        if location:
+            location = normalize_place(location)
         max_price = budget_amount(request.message)
         if max_price is None and session.pending_budget:
             max_price = budget_amount(request.message, allow_bare=True)
+        if max_price is None and (session.pending_budget or session.budget_decided):
+            max_price = stated_budget_amount(request.message)
+        if (
+            session.pending_vehicle_intent == "availability"
+            and re.search(r"\baed\b", request.message, re.IGNORECASE)
+        ):
+            return None
         budget_period = None
         if max_price is not None:
             if re.search(r"\b(?:whole trip|total|trip budget)\b", request.message,
@@ -927,6 +1177,7 @@ class ConversationService:
                                   suggestions=no_results_suggestions(
                                       filters, anywhere=session.anywhere,
                                       trip_budget=session.trip_budget is not None,
+                                      location_locked=session.location_locked,
                                   ))
         cars = with_match_reasons(cars, filters)
         refinement = None
@@ -968,9 +1219,8 @@ class ConversationService:
         if apply_unforwarded and filters.location:
             if filtered and not any(car.location for car in filtered):
                 return [], "location", None
-            wanted_location = filters.location.casefold()
             filtered = [car for car in filtered
-                        if car.location and wanted_location in car.location.casefold()]
+                        if car.location and place_matches(filters.location, car.location)]
         note = None
         if apply_unforwarded and filters.search:
             wanted_search = filters.search.casefold()
@@ -1155,10 +1405,6 @@ class ConversationService:
                         return_only=filters.from_date is not None and filters.to_date is None,
                     ),
                 )
-            if not (filters.from_time and filters.to_time):
-                session.pending_requirement = "availability_times"
-                return self._response(session, "clarification",
-                                      "What pickup and return times should I check for those dates?")
             session.pending_requirement = None
             session.pending_vehicle_intent = None
         pending = PendingProtectedOperation(
@@ -1188,18 +1434,14 @@ class ConversationService:
             available = await self.gear.check_availability(card.id, session.filters, token)
             session.pending_operation = None
             if self.data_source == "demo":
-                message = ("In this demo, the sample vehicle is available for those dates and times."
+                message = ("In this demo, the sample vehicle is available for those rental days."
                            if available else
-                           "In this demo, the sample vehicle is unavailable for those dates and times.")
+                           "In this demo, the sample vehicle is unavailable for those rental days.")
             elif available:
-                message = (
-                    "This car is available for your selected dates. To book it, open the "
-                    "Gear app, select this car, and complete the booking there."
-                )
+                message = "This car is available for your selected rental days."
             else:
                 message = unavailable_vehicle_message()
-            suggestions = (["How booking works", "Different vehicle type"] if available
-                           else unavailable_vehicle_suggestions())
+            suggestions = ["Different vehicle type"] if available else unavailable_vehicle_suggestions()
             return self._response(session, "availability", message, vehicles=[card],
                                   available=available, suggestions=suggestions)
         except GearAuthorizationRequired:
@@ -1250,6 +1492,8 @@ class ConversationService:
         previous_filters = session.filters.model_copy(deep=True)
         updates = {key: value for key, value in extracted.filter_updates().items()
                    if value != ""}
+        if isinstance(updates.get("location"), str):
+            updates["location"] = normalize_place(updates["location"])
         if "car_type" in extracted.unsupported_constraints and extracted.search:
             updates["car_type_name"] = extracted.search
             updates.pop("search", None)
@@ -1280,8 +1524,10 @@ class ConversationService:
                 r"\b(?:increase|raise|expand)\b.{0,35}\bby\s+(?:aed\s*)?\d",
                 request.message, re.IGNORECASE,
             ) is not None
-            amount = (None if is_relative_increase else
-                      budget_amount(request.message, allow_bare=awaiting_budget))
+            amount = None if is_relative_increase else (
+                budget_amount(request.message, allow_bare=awaiting_budget)
+                or stated_budget_amount(request.message)
+            )
             if amount is None:
                 updates.pop("min_price", None)
                 updates.pop("max_price", None)
@@ -1307,7 +1553,14 @@ class ConversationService:
             session.pending_vehicle_intent = None
             session.results = []
         try:
-            relative_dates = resolve_month_day_range(request.message, self.today())
+            relative_dates = resolve_month_day_range(
+                request.message,
+                self.today(),
+                allow_bare=session.pending_requirement in {
+                    "dates", "availability_dates", "location", "location_then_dates",
+                } or session.pending_vehicle_intent == "availability"
+                or bool(extracted.from_date or extracted.to_date),
+            )
         except ValueError:
             return self._response(session, "clarification",
                                   "Those days aren't a valid pickup and return range for that month. "
@@ -1396,11 +1649,14 @@ class ConversationService:
         if session.filters.location and session.filters.location != previous_filters.location:
             session.location_source = "typed"
             session.anywhere = False
+            session.location_locked = True
             session.field_provenance["location"] = "typed"
         if request.context.lat is not None:
             session.location_source = "shared"
             session.anywhere = False
+            session.location_locked = True
             session.field_provenance["location"] = "shared"
+        self._lock_known_location(session)
         for field_name in updates:
             if field_name not in {"location", "lat", "lng"}:
                 session.field_provenance[field_name] = "typed"

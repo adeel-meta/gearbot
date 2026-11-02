@@ -245,8 +245,15 @@ class GearClient:
         if not CAR_ID.fullmatch(car_id):
             raise GearUnavailable("Invalid vehicle ID")
         self._require_token(token)
-        if not all((filters.from_date, filters.from_time, filters.to_date, filters.to_time)):
-            raise GearUnavailable("Rental dates and times are required")
+        if not (filters.from_date and filters.to_date):
+            raise GearUnavailable("Rental dates are required")
+        if not (filters.from_time and filters.to_time):
+            # The day-based availability endpoint can answer this request without
+            # inventing pickup hours. Keep exact-hour verification for callers
+            # that explicitly supplied both times.
+            day_filters = filters.model_copy(update={"from_time": None, "to_time": None})
+            available_cars = await self.search_available_cars(day_filters, token)
+            return any(car.id.casefold() == car_id.casefold() for car in available_cars)
         payload = await self._request("POST", "checkIsCarAvailable", token, body={
             "car_id": car_id,
             "start_date": filters.from_date.isoformat(),

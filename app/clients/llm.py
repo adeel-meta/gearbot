@@ -21,6 +21,13 @@ class Extraction(BaseModel):
     intent: Literal["search", "details", "availability", "pricing",
                     "vehicle_specs", "booking_guidance", "context_question",
                     "unsupported"]
+    action: Literal[
+        "supply", "revise", "recall", "policy", "booking", "result", "reset",
+        "unclear", "search",
+    ] | None = None
+    target: Literal[
+        "location", "dates", "budget", "vehicle_type", "booking", "results",
+    ] | None = None
     question_field: Literal[
         "location", "dates", "budget", "vehicle_type", "summary", "reason",
     ] | None = None
@@ -71,6 +78,13 @@ def extraction_schema() -> dict[str, object]:
         "intent": {"type": "string", "enum": ["search", "details", "availability",
                                                "pricing", "vehicle_specs", "booking_guidance",
                                                "context_question", "unsupported"]},
+        "action": {"type": ["string", "null"], "enum": [
+            "supply", "revise", "recall", "policy", "booking", "result", "reset",
+            "unclear", "search", None,
+        ]},
+        "target": {"type": ["string", "null"], "enum": [
+            "location", "dates", "budget", "vehicle_type", "booking", "results", None,
+        ]},
         "question_field": {"type": ["string", "null"], "enum": [
             "location", "dates", "budget", "vehicle_type", "summary", "reason", None,
         ]},
@@ -174,6 +188,19 @@ class OpenAIRequirementExtractor:
             "attributes of a previously shown car, such as seats, mileage, fuel type, or "
             "transmission. Use details, availability or pricing only when the user "
             "refers to a previously shown option. "
+            "Set action and target for this message. "
+            "action=supply when the user gives a value. "
+            "action=revise when they want to change or correct one field, including questions "
+            "such as 'can I change my location?' with no new value. A question about changing "
+            "a field is revise, not recall. "
+            "action=recall when they ask what is already saved or why a detail is needed. "
+            "action=policy for the cancellation policy, documents, fees, or support. "
+            "action=booking for how to book or a personal booking; never invent booking status. "
+            "action=result when they refer to a car already shown. "
+            "action=reset only when they explicitly start over and do not give new search details. "
+            "action=unclear when they want a change but name no field. "
+            "Otherwise action=search. "
+            "target is the one field, or null. Put a new value only in the existing value fields. "
             "Set selected_index to its one-based position in previous_results; use null if unclear. "
             "Never output a vehicle ID. Use booking_guidance for booking requests and general booking process "
             "questions; any personal booking status cannot be checked. Use context_question for "
