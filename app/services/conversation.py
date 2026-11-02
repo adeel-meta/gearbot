@@ -613,6 +613,12 @@ class ConversationService:
                 session, "clarification",
                 "You're right — you haven't shared a location. Which city or area should I search?",
             )
+        if re.fullmatch(
+            r"(?:no\s+)?(?:do\s+)?(?:search\s+)?(?:for\s+)?(?:an?\s+)?"
+            r"(?:suv|sedan|hatchback|coupe|convertible|van|pickup|truck)",
+            normalized(message),
+        ) and (kind := revision_vehicle_type(message)):
+            return await self._replace_vehicle_type(session, kind, token)
         if handled := await self._apply_local_decision(session, message, token):
             return handled
         if normalized(message) in {
@@ -1307,15 +1313,13 @@ class ConversationService:
             elif filtered:
                 note = ("I couldn't match that wording on the listing titles, "
                         "so these are the closest cars for your other filters.")
-        if filters.car_type_name and not filters.car_type_id and not filters.car_type_ids:
+        if apply_unforwarded and filters.car_type_name:
+            if filtered and not any(car.car_type_name for car in filtered):
+                return [], "vehicle type", None
             wanted_type = filters.car_type_name.casefold()
-            typed = [car for car in filtered
-                     if car.car_type_name and wanted_type in car.car_type_name.casefold()]
-            if typed:
-                filtered = typed
-            elif filtered:
-                note = ("I couldn't find that vehicle type in the current listings, "
-                        "so these are the other cars that match your area and budget.")
+            filtered = [car for car in filtered
+                        if car.car_type_name
+                        and car.car_type_name.casefold() == wanted_type]
         if apply_unforwarded and filters.car_type_ids:
             allowed_types = {value.casefold() for value in filters.car_type_ids}
             if filtered and not any(car.car_type_id for car in filtered):
