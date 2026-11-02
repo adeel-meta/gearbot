@@ -821,11 +821,37 @@ class ConversationService:
                 session, "Please sign in to search vehicles available for those dates.")
         had_prior_results = bool(session.results)
         gear_started = perf_counter()
+        listing_note = None
         try:
             if searches_availability:
                 cars = await self.gear.search_available_cars(filters, token)
             else:
                 cars = await self.gear.search_cars(filters, None)
+            cars, missing_attribute, listing_note = self._apply_verified_preferences(
+                cars, filters, apply_unforwarded=searches_availability,
+            )
+            already_broad = not any((
+                searches_availability, filters.search, filters.car_type_id,
+                filters.car_type_ids, filters.brand_id,
+            ))
+            if not cars and missing_attribute is None and not already_broad:
+                broad = filters.model_copy(update={
+                    "search": None, "car_type_id": None, "car_type_ids": None,
+                    "brand_id": None,
+                })
+                listings = await self.gear.search_cars(broad, None)
+                narrowed = filters.model_copy(update={
+                    "search": None, "car_type_id": None, "car_type_ids": None,
+                    "brand_id": None,
+                })
+                cars, missing_attribute, listing_note = self._apply_verified_preferences(
+                    listings, narrowed, apply_unforwarded=True,
+                )
+                if cars and searches_availability:
+                    listing_note = (
+                        "I couldn't confirm availability for those dates, "
+                        "so these are current listings that match your other filters."
+                    )
             logger.info("gear_ms=%.1f", (perf_counter() - gear_started) * 1000)
         except GearAuthorizationRequired:
             session.pending_operation = PendingProtectedOperation(
@@ -840,9 +866,6 @@ class ConversationService:
                                   "I can't search right now. Your search details are saved; "
                                   "please try again.",
                                   suggestions=["Retry"])
-        cars, missing_attribute = self._apply_verified_preferences(
-            cars, filters, apply_unforwarded=searches_availability,
-        )
         if missing_attribute:
             session.pending_operation = None
             return self._response(
@@ -887,6 +910,8 @@ class ConversationService:
             refinement = criteria_summary(filters, lead="Sure").rstrip(".")
         message = results_message(len(cars), filters, catalog_skipped=catalog_skipped,
                                   refinement_note=refinement)
+        if listing_note:
+            message = f"{message.rstrip()} {listing_note}"
         if session.trip_budget is not None:
             message += (f" Your AED {session.trip_budget:g} trip budget was not used "
                         "as a daily price limit; review the final total in the Gear app.")
@@ -899,7 +924,7 @@ class ConversationService:
     @staticmethod
     def _apply_verified_preferences(
         cars: list[VehicleCard], filters: SearchFilters, *, apply_unforwarded: bool = False,
-    ) -> tuple[list[VehicleCard], str | None]:
+    ) -> tuple[list[VehicleCard], str | None, str | None]:
         filtered = list(cars)
         required_fields = (
             (filters.seats is not None, "seating capacity", lambda car: car.seats is not None),
@@ -913,31 +938,48 @@ class ConversationService:
         )
         for requested, label, has_value in required_fields:
             if requested and filtered and not any(has_value(car) for car in filtered):
-                return [], label
+                return [], label, None
         if apply_unforwarded and filters.location:
             if filtered and not any(car.location for car in filtered):
-                return [], "location"
+                return [], "location", None
             wanted_location = filters.location.casefold()
             filtered = [car for car in filtered
                         if car.location and wanted_location in car.location.casefold()]
+        note = None
         if apply_unforwarded and filters.search:
             wanted_search = filters.search.casefold()
-            filtered = [car for car in filtered
-                        if car.title and wanted_search in car.title.casefold()]
+            matched = [car for car in filtered if any(
+                wanted_search in (value or "").casefold()
+                for value in (car.title, car.car_type_name, car.brand_name, car.location)
+            )]
+            if matched:
+                filtered = matched
+            elif filtered:
+                note = ("I couldn't match that wording on the listing titles, "
+                        "so these are the closest cars for your other filters.")
+        if filters.car_type_name and not filters.car_type_id and not filters.car_type_ids:
+            wanted_type = filters.car_type_name.casefold()
+            typed = [car for car in filtered
+                     if car.car_type_name and wanted_type in car.car_type_name.casefold()]
+            if typed:
+                filtered = typed
+            elif filtered:
+                note = ("I couldn't find that vehicle type in the current listings, "
+                        "so these are the other cars that match your area and budget.")
         if apply_unforwarded and filters.car_type_ids:
             allowed_types = {value.casefold() for value in filters.car_type_ids}
             if filtered and not any(car.car_type_id for car in filtered):
-                return [], "vehicle type"
+                return [], "vehicle type", None
             filtered = [car for car in filtered
                         if car.car_type_id and car.car_type_id.casefold() in allowed_types]
         if apply_unforwarded and filters.min_rating is not None:
             if filtered and not any(car.rating is not None for car in filtered):
-                return [], "rating"
+                return [], "rating", None
             filtered = [car for car in filtered
                         if car.rating is not None and car.rating >= filters.min_rating]
         if apply_unforwarded and filters.featured is not None:
             if filtered and not any(car.is_featured is not None for car in filtered):
-                return [], "featured-listing"
+                return [], "featured-listing", None
             filtered = [car for car in filtered if car.is_featured is filters.featured]
         if filters.seats is not None:
             filtered = [car for car in filtered
@@ -952,9 +994,9 @@ class ConversationService:
                         if car.transmission and car.transmission.casefold() == wanted]
         if filters.budget_period == "trip" and filters.max_price is not None:
             if not filters.rental_days:
-                return [], "rental duration for a total-trip budget"
+                return [], "rental duration for a total-trip budget", None
             if filtered and not any(car.price is not None for car in filtered):
-                return [], "daily price"
+                return [], "daily price", None
             filtered = [
                 car for car in filtered
                 if car.price is not None and car.price * filters.rental_days <= filters.max_price
@@ -987,7 +1029,7 @@ class ConversationService:
         elif filters.sort_by == "rating":
             filtered.sort(key=lambda car: car.rating if car.rating is not None else -1,
                           reverse=True)
-        return filtered, None
+        return filtered, None, note
 
     async def _vehicle_spec_answer(self, session: Session, topic: SpecTopic,
                                  card: VehicleCard, token: str | None) -> ChatResponse:
