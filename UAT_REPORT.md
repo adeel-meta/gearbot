@@ -1,5 +1,11 @@
 # Gear chatbot UAT report
 
+## Follow-up: implicit location claim
+
+On a fresh guest widget session, `Find SUVs under 400 AED per day` sent `context: {"lat":25.2048,"lng":55.2708}` even though no location had been shared. `LOCATION?` and `I HAVENT SHARED ANY ;LOCATION` both received the exact reply: “I'm using the location you shared; you haven't named an area.” [Failure screenshot](assets/uat/location-implicit.png). The backend had treated any supplied coordinates as consented location. The local fix requires `context.location_shared: true` before using coordinates and clears saved coordinates when the user denies sharing them. The website frontend must stop sending fixed coordinates as shared location; these local changes have not been deployed.
+
+The signed-in widget also returned `QA-TEST-V98 Toyota Camry` at AED 404.46/day for the AED 400/day limit. The response JSON itself contained `price: 404.46` and `max_price: 400`. The local backend now removes results whose verified daily price exceeds the requested maximum. This change has not been deployed.
+
 Tested 2 November 2026 (Asia/Karachi) with headless Chrome and Playwright. November dates mean **2026**. Guest sessions were isolated between independent cases. The provided test account was passed to the browser through environment variables for the Gear website sign-in; credentials are absent from this report and repository. The playground requires a Gear bearer token, which the email/password sign-in does not provide. No payment or booking was submitted.
 
 **Scope and limits.** The website booking button is labeled **BOOK NOW**; because it could create a real booking, testing stopped there. Consequently the subsequent booking form, deposit and insurance fields, and final payable amount beyond the visible estimate were not verified. Exact bot replies below are the rendered assistant message text, including result-card and suggestion text.

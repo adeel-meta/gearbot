@@ -310,6 +310,7 @@ class ConversationService:
             else:
                 if needs_missing_dates:
                     session.pending_requirement = "dates"
+                    self._remember_date_prompt(session)
                 return self._response(
                     session, "clarification",
                     unverified_filter_message(blocked, session.filters, extracted.needs_dates),
@@ -331,6 +332,7 @@ class ConversationService:
                 return self._response(session, "clarification", location_prompt(filters))
             if question == "dates":
                 session.pending_requirement = "dates"
+                self._remember_date_prompt(session)
                 return self._response(
                     session, "clarification", dates_prompt(
                         pickup_only=filters.from_date is None and (
@@ -397,6 +399,8 @@ class ConversationService:
         if filters.sort_by == "distance" and filters.lat is None and not session.location_locked:
             return self._response(session, "clarification", near_me_prompt())
         if (filters.from_date is None) != (filters.to_date is None):
+            session.pending_requirement = "dates"
+            self._remember_date_prompt(session)
             return self._response(
                 session, "clarification",
                 dates_prompt(
@@ -735,6 +739,7 @@ class ConversationService:
                 return self._response(session, "clarification", budget_amount_prompt())
             if action == "dates":
                 session.pending_requirement = "dates"
+                self._remember_date_prompt(session)
                 return self._response(
                     session, "clarification", dates_prompt(today=self.today()),
                 )
@@ -1744,12 +1749,15 @@ class ConversationService:
             session.pending_budget = True
             return self._response(session, "clarification", budget_amount_prompt())
         if ambiguous_day_range:
-            session.pending_requirement = ("availability_dates"
-                                           if session.pending_vehicle_intent == "availability"
-                                           else "dates")
+            session.pending_requirement = (
+                "availability_dates"
+                if session.pending_vehicle_intent == "availability"
+                else "dates"
+            )
+            self._remember_date_prompt(session)
             return self._response(
                 session, "clarification",
-                "Which month and year should I use for those pickup and return days?",
+                dates_prompt(today=self.today()),
             )
         return None
 

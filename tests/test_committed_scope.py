@@ -60,7 +60,7 @@ def test_suv_near_location_resolves_verified_catalog_name():
     async def scenario():
         first = await chat.chat(ChatRequest(
             message="Show me available SUVs near my location.",
-            context={"lat": 25.2048, "lng": 55.2708},
+            context={"lat": 25.2048, "lng": 55.2708, "location_shared": True},
         ), None)
         assert first.status == "clarification"
         assert "date" in first.message.lower()
@@ -88,7 +88,7 @@ def test_featured_nearby_search_uses_shared_coordinates():
 
     response = asyncio.run(chat.chat(ChatRequest(
         message="Show featured cars nearby",
-        context={"lat": 25.2048, "lng": 55.2708},
+        context={"lat": 25.2048, "lng": 55.2708, "location_shared": True},
     ), None))
 
     assert response.status == "results"
@@ -127,7 +127,7 @@ def test_cars_near_me_suggestion_uses_shared_coordinates_or_asks_for_area():
 
         with_location = await chat.chat(ChatRequest(
             message="Cars near me", session_id=without_location.session_id,
-            context={"lat": 25.2048, "lng": 55.2708},
+            context={"lat": 25.2048, "lng": 55.2708, "location_shared": True},
         ), None)
         assert with_location.status == "clarification"
         assert "date" in with_location.message.lower()

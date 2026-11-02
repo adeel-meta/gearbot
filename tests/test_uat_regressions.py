@@ -2,7 +2,7 @@
 
 import asyncio
 
-from app.schemas.chat import ChatRequest, VehicleCard
+from app.schemas.chat import ChatRequest, SearchFilters, VehicleCard
 from app.security.sessions import SessionStore
 from app.services.conversation import ConversationService
 from app.services.faqs import faq_answer
@@ -63,3 +63,45 @@ def test_public_price_filter_falls_back_to_verified_listing_price():
     assert response.status == "results"
     assert [car.title for car in response.vehicles] == ["Honda"]
     assert "checked verified daily listing prices" in response.message
+
+
+def test_default_widget_coordinates_are_not_treated_as_shared_location():
+    from tests.test_chat_flow import extraction
+
+    chat = ConversationService(
+        FakeExtractor([extraction(car_type_name="SUV", max_price=400,
+                                  budget_period="day")]),
+        FakeGear(), SessionStore(1800),
+    )
+
+    async def scenario():
+        first = await chat.chat(ChatRequest(
+            message="Find SUVs under 400 AED per day",
+            context={"lat": 25.2048, "lng": 55.2708},
+        ), None)
+        assert first.applied_filters.lat is None
+        recall = await chat.chat(ChatRequest(
+            message="LOCATION?", session_id=first.session_id,
+            context={"lat": 25.2048, "lng": 55.2708},
+        ), None)
+        assert "haven't specified an area" in recall.message
+        denial = await chat.chat(ChatRequest(
+            message="I HAVENT SHARED ANY ;LOCATION", session_id=first.session_id,
+            context={"lat": 25.2048, "lng": 55.2708},
+        ), None)
+        assert denial.applied_filters.lat is None
+        assert "haven't shared" in denial.message
+
+    asyncio.run(scenario())
+
+
+def test_result_daily_price_must_not_exceed_daily_budget():
+    cards = [
+        VehicleCard(id="507f1f77bcf86cd799439012", title="Over cap", price=404.46),
+        VehicleCard(id="507f1f77bcf86cd799439013", title="Within cap", price=189),
+    ]
+    filtered, missing, _ = ConversationService._apply_verified_preferences(
+        cards, SearchFilters(max_price=400, budget_period="day"),
+    )
+    assert missing is None
+    assert [car.title for car in filtered] == ["Within cap"]

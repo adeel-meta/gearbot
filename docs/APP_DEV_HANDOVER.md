@@ -67,7 +67,7 @@ POST /api/v1/agent/chat
 Content-Type: application/json
 X-AI-Session-Transport: cookie
 
-{"message":"Cars near me","context":{"lat":25.08,"lng":55.14}}
+{"message":"Cars near me","context":{"lat":25.08,"lng":55.14,"location_shared":true}}
 ```
 
 Reset:
@@ -99,7 +99,8 @@ Defined in `app/schemas/chat.py` (`ChatRequest`).
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `lat`, `lng` | number | Both required together; used for “near me” |
+| `lat`, `lng` | number | Both required together; ignored unless `location_shared` is true |
+| `location_shared` | boolean | Set true only after the user grants geolocation or explicitly shares coordinates. Defaults to false; never send a fixed fallback coordinate as shared location. |
 | `car_type_id` | Mongo ObjectId string | Single type filter |
 | `car_type_ids` | array of ObjectIds | Do not combine with `car_type_id` |
 | `brand_id` | ObjectId | Brand filter |

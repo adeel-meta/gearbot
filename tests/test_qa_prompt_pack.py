@@ -106,8 +106,8 @@ def test_five_seater_uses_verified_seat_data():
 
 def test_fuel_efficiency_uses_only_verified_mileage():
     gear = ScriptedGear([CARD])
-    response = asyncio.run(service([extraction(max_price=400)], gear).chat(
-        ChatRequest(message="Show me the most fuel-efficient car under AED 400"), None,
+    response = asyncio.run(service([extraction(max_price=500)], gear).chat(
+        ChatRequest(message="Show me the most fuel-efficient car under AED 500"), None,
     ))
     assert response.status == "results"
     assert response.vehicles[0].fuel_efficiency == 18
@@ -372,7 +372,7 @@ def test_near_me_with_coordinates_does_not_ask_again():
     gear = ScriptedGear([CARD])
     response = asyncio.run(service([extraction(needs_location=True, sort_by="distance")], gear).chat(
         ChatRequest(message="Show SUVs near me.",
-                    context={"car_type_id": SUV_ID, "lat": 25.2048, "lng": 55.2708}),
+                    context={"car_type_id": SUV_ID, "lat": 25.2048, "lng": 55.2708, "location_shared": True}),
         None,
     ))
     assert response.status == "results"

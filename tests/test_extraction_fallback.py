@@ -139,7 +139,7 @@ def test_bare_range_that_crosses_months_gets_clarified():
     ), None))
 
     assert response.status == "clarification"
-    assert "aren't a valid" in response.message.lower()
+    assert "aren't valid" in response.message.lower()
     assert gear.calls == []
     assert extractor.calls == 0
 
@@ -161,7 +161,7 @@ def test_invalid_named_date_gets_validation_prompt_when_model_is_unavailable():
     ), None))
 
     assert response.status == "clarification"
-    assert "aren't a valid" in response.message.lower()
+    assert "aren't valid" in response.message.lower()
     assert gear.calls == []
     assert extractor.calls == 0
 
