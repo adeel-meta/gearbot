@@ -76,6 +76,67 @@ def test_suv_near_location_resolves_verified_catalog_name():
     asyncio.run(scenario())
 
 
+def test_featured_nearby_search_uses_shared_coordinates():
+    card = VehicleCard(
+        id="507f1f77bcf86cd799439011", title="Featured car",
+        location="Dubai", is_featured=True,
+    )
+    gear = FakeGear([card])
+    chat = ConversationService(FakeExtractor([
+        extraction(needs_location=True, featured=True, sort_by="distance"),
+    ]), gear, SessionStore(1800))
+
+    response = asyncio.run(chat.chat(ChatRequest(
+        message="Show featured cars nearby",
+        context={"lat": 25.2048, "lng": 55.2708},
+    ), None))
+
+    assert response.status == "results"
+    assert [vehicle.id for vehicle in response.vehicles] == [card.id]
+    assert response.applied_filters.lat == 25.2048
+    assert gear.calls[0][0].featured is True
+    assert gear.calls[0][0].lat == 25.2048
+
+
+def test_featured_listing_search_does_not_require_dates_from_model_hint():
+    card = VehicleCard(
+        id="507f1f77bcf86cd799439011", title="Featured car",
+        location="Dubai", is_featured=True,
+    )
+    gear = FakeGear([card])
+    chat = ConversationService(FakeExtractor([
+        extraction(location="Dubai", featured=True, needs_dates=True),
+    ]), gear, SessionStore(1800))
+
+    response = asyncio.run(chat.chat(
+        ChatRequest(message="Show featured cars in Dubai"), None,
+    ))
+
+    assert response.status == "results"
+    assert [vehicle.id for vehicle in response.vehicles] == [card.id]
+    assert len(gear.calls) == 1
+
+
+def test_cars_near_me_suggestion_uses_shared_coordinates_or_asks_for_area():
+    chat = ConversationService(FakeExtractor([]), FakeGear(), SessionStore(1800))
+
+    async def scenario():
+        without_location = await chat.chat(ChatRequest(message="Cars near me"), None)
+        assert without_location.status == "clarification"
+        assert "location" in without_location.message.lower()
+
+        with_location = await chat.chat(ChatRequest(
+            message="Cars near me", session_id=without_location.session_id,
+            context={"lat": 25.2048, "lng": 55.2708},
+        ), None)
+        assert with_location.status == "clarification"
+        assert "date" in with_location.message.lower()
+        assert with_location.applied_filters.lat == 25.2048
+        assert with_location.applied_filters.lng == 55.2708
+
+    asyncio.run(scenario())
+
+
 def test_date_based_availability_post_filters_location_from_verified_cards():
     dubai = VehicleCard(id="507f1f77bcf86cd799439031", title="Dubai car", location="Dubai")
     sharjah = VehicleCard(id="507f1f77bcf86cd799439032", title="Sharjah car", location="Sharjah")

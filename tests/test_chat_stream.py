@@ -5,8 +5,9 @@ import json
 
 import httpx
 
-from app.api.v1.chat import get_chat_service
+from app.api.v1.chat import chat_stream, get_chat_service
 from app.main import app
+from app.schemas.chat import ChatRequest, ChatResponse
 from app.security.sessions import SessionStore
 from app.services.conversation import ConversationService
 from tests.test_chat_flow import FakeExtractor, FakeGear
@@ -77,3 +78,33 @@ def test_stream_result_matches_chat_and_replays_the_same_turn():
         asyncio.run(scenario())
     finally:
         app.dependency_overrides.clear()
+
+
+def test_stream_emits_started_before_the_chat_result_is_ready():
+    release_result = asyncio.Event()
+
+    class SlowService:
+        async def chat(self, request, token):
+            await release_result.wait()
+            return ChatResponse(status="guidance", message="Ready")
+
+    async def scenario():
+        response = await chat_stream(
+            ChatRequest(message="Show cars in Dubai"),
+            authorization=None, session_header=None, session_cookie=None,
+            session_transport=None, service=SlowService(),
+        )
+        events = response.body_iterator
+        started = await asyncio.wait_for(anext(events), timeout=0.2)
+        assert _events(started)[0][0] == "started"
+
+        pending = asyncio.create_task(anext(events))
+        await asyncio.sleep(0)
+        assert not pending.done()
+        release_result.set()
+        result = await asyncio.wait_for(pending, timeout=0.2)
+        assert _events(result)[0] == ("result", ChatResponse(
+            status="guidance", message="Ready",
+        ).model_dump(mode="json", exclude_none=True))
+
+    asyncio.run(scenario())

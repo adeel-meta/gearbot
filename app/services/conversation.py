@@ -77,6 +77,15 @@ from app.services.vehicle_specs import (
 
 
 logger = logging.getLogger("gear_ai.conversation")
+DATE_REQUEST = re.compile(
+    r"\b(?:available|availability|dates?|pickup|return|weekend|tomorrow|today|"
+    r"tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"january|february|march|april|may|june|july|august|september|october|"
+    r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|"
+    r"(?:next|this)\s+(?:week|month|year)|\d+\s*(?:days?|weeks?|nights?))\b"
+    r"|\b\d{1,2}[/.-]\d{1,2}\b",
+    re.IGNORECASE,
+)
 
 
 class TurnConflict(Exception):
@@ -187,6 +196,12 @@ class ConversationService:
                     session, "unavailable",
                     "I can't process your request right now. Please try again shortly.",
                 )
+
+        # The model can mistake a request to browse current cars for a request
+        # to confirm date-based availability. Only date-related user wording may
+        # introduce that extra requirement.
+        if extracted.needs_dates and not DATE_REQUEST.search(request.message):
+            extracted = extracted.model_copy(update={"needs_dates": False})
 
         spec_topic = vehicle_spec_topic(request.message)
         if extracted.intent not in {"details", "availability", "pricing"} and (
@@ -413,8 +428,19 @@ class ConversationService:
                 session.criteria_revision += 1
                 return await self._continue_search(session, token)
             if normalized(message) == "cars near me":
-                session.pending_requirement = "location"
-                return self._response(session, "clarification", near_me_prompt())
+                if request.context.lat is None:
+                    session.pending_requirement = "location"
+                    return self._response(session, "clarification", near_me_prompt())
+                session.filters = session.filters.model_copy(update={
+                    "location": None,
+                    "lat": request.context.lat,
+                    "lng": request.context.lng,
+                })
+                session.location_source = "shared"
+                session.field_provenance["location"] = "shared"
+                session.anywhere = False
+                session.criteria_revision += 1
+                return await self._continue_search(session, token)
             if normalized(message) == "find a car":
                 return await self._continue_search(session, token)
         if starts_browsing(message):

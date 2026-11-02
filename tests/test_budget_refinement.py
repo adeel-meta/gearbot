@@ -1,6 +1,7 @@
 """Budget refinements must ask for a value before repeating a search."""
 
 import asyncio
+from datetime import date
 
 import pytest
 
@@ -124,7 +125,8 @@ def test_budget_clarification_does_not_replace_an_existing_date_question():
         extraction(),
         extraction(needs_dates=True),
         extraction(from_date="2026-10-20", to_date="2026-10-22"),
-    ]), gear, SessionStore(1800), data_source="demo")
+    ]), gear, SessionStore(1800), data_source="demo",
+        today=lambda: date(2026, 10, 1))
 
     async def scenario():
         first = await chat.chat(ChatRequest(message="Cars in Dubai next weekend"), None)
